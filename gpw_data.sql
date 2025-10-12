@@ -80,7 +80,7 @@ ALTER TABLE `dane`
 --
 ALTER TABLE `firma`
   ADD PRIMARY KEY (`id_firmy`),
-  ADD UNIQUE KEY `firma` (`nazwa`) USING HASH;
+  ADD UNIQUE KEY `firma` (`nazwa`(255)) USING HASH;
 
 --
 -- Indeksy dla tabeli `historia`

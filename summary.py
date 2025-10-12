@@ -10,7 +10,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_transformers import EmbeddingsClusteringFilter
 from langchain_huggingface import HuggingFaceEmbeddings
 
-MODEL = "llama3.2:latest"
+DEFAULT_MODEL = "llama3.2:latest"
 
 model_name = "BAAI/bge-base-en-v1.5"
 model_kwargs = {"device": "cuda"}
@@ -42,7 +42,17 @@ def extract(file_path: str):
     return texts
 
 
-def summarize_document_with_kmeans_clustering(file_path: str):
+def summarize_document_with_kmeans_clustering(file_path: str, model_name: str = DEFAULT_MODEL):
+    """
+    Summarize a PDF document using k-means clustering and an Ollama model.
+    
+    Args:
+        file_path: Path to the PDF file
+        model_name: Name of the Ollama model to use (default: DEFAULT_MODEL)
+    
+    Returns:
+        String containing the summary or error message
+    """
     loader = PyPDFLoader(file_path)
     pages = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=0)
@@ -52,23 +62,23 @@ def summarize_document_with_kmeans_clustering(file_path: str):
         doc_filter = EmbeddingsClusteringFilter(
             embeddings=embeddings, num_clusters=1, num_closest=1
         )
-        llm = ChatOllama(model=MODEL, temperature=0, max_tokens=50)
+        llm = ChatOllama(model=model_name, temperature=0, num_predict=50)
     elif len(pages) >= 40:
         doc_filter = EmbeddingsClusteringFilter(
             embeddings=embeddings, num_clusters=9, num_closest=1
         )
-        llm = ChatOllama(model=MODEL, temperature=0, max_tokens=1200)
+        llm = ChatOllama(model=model_name, temperature=0, num_predict=1200)
     else:
         doc_filter = EmbeddingsClusteringFilter(
             embeddings=embeddings, num_clusters=5, num_closest=1
         )
-        llm = ChatOllama(model=MODEL, temperature=0, max_tokens=600)
+        llm = ChatOllama(model=model_name, temperature=0, num_predict=600)
 
     try:
         result = doc_filter.transform_documents(documents=texts)
         checker_chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt)
         summary = checker_chain.run(result)
-        return f"#### liczba stron: {len(pages)} ####\n{summary}"
+        return f"#### Model: {model_name} | Liczba stron: {len(pages)} ####\n{summary}"
     except Exception as e:
         return f"#### zbyt mały dokument, {len(pages)} stron w raporcie #### {e}"
 

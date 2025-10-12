@@ -1,0 +1,7 @@
+# model_name estimated_size_GB
+# These are rough estimates. Replace or extend with accurate sizes from the model provider or from `ollama list` metadata if available.
+
+llama3.2:latest 6
+alpaca-7b 4
+vicuna-7b 4
+gpt-neo-2.7b 2

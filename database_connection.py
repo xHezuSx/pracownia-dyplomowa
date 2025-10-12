@@ -2,8 +2,8 @@ import pymysql
 from datetime import datetime
 
 host = "localhost"
-user = "root"
-password = ""
+user = "user"
+password = "qwerty123"
 database = "gpw data"
 
 
@@ -16,7 +16,7 @@ try:
 
     def wstaw_firme(firma):
         sql = "INSERT INTO firma(nazwa)VALUES(%s)"
-        kursor.execute(sql, firma)
+        kursor.execute(sql, (firma,))
         connection.commit()
 
     def wstaw_dane(
@@ -45,8 +45,11 @@ try:
 
     def pobierz_klucz_firmy(firma):
         mysql = "SELECT id_firmy FROM firma WHERE nazwa LIKE %s "
-        kursor.execute(mysql, firma)
-        return kursor.fetchone()[0]
+        kursor.execute(mysql, (firma,))
+        row = kursor.fetchone()
+        if row is None:
+            raise LookupError(f"Nie znaleziono firmy w bazie: {firma}")
+        return row[0]
 
     def wstaw_historie(
         company_name,

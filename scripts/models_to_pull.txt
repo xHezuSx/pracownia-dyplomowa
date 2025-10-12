@@ -1,0 +1,8 @@
+# List of Ollama model names to pull (one per line)
+# These are placeholders - replace with actual model names available in your ollama registry.
+# Models should be <= 10GB (see estimates in model_size_estimates.txt)
+
+llama3.2:latest
+alpaca-7b
+vicuna-7b
+gpt-neo-2.7b

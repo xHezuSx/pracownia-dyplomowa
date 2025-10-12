@@ -8,8 +8,8 @@ import re
 from summary import summarize_document_with_kmeans_clustering
 from database_connection import (
     wstaw_firme,
-    wstaw_dane,
     pobierz_klucz_firmy,
+    wstaw_dane,
     wstaw_historie,
 )
 
@@ -91,13 +91,13 @@ def get_attachments(url: str, filetype: list):
     return download_attachments_url, attachment_names
 
 
-def get_summaries(files: list, company: str) -> str:
+def get_summaries(files: list, company: str, model_name: str = "llama3.2:latest") -> str:
     text = ""
     for f in files:
         path = f"./REPORTS/{company}/{f}"
         text += f"\n## {f} ##\n"
         if f.endswith(".pdf") and os.path.exists(path):
-            text += summarize_document_with_kmeans_clustering(path)
+            text += summarize_document_with_kmeans_clustering(path, model_name)
     return text
 
 
@@ -109,6 +109,7 @@ def scrape(
     report_category: list,
     download_csv: bool,
     download_file_types: list,
+    model_name: str = "llama3.2:latest",
 ):
     url_report_type = []
     if "current" in report_type:
@@ -158,8 +159,27 @@ def scrape(
         "date": date,
     }
 
-    r = requests.post(URL, data=payload)
-    soup = BeautifulSoup(r.content, "html.parser")
+    response = requests.post(URL, data=payload)
+    try:
+        response.raise_for_status()
+    except Exception as e:
+        return (
+            f"Request to GPW failed: {e}",
+            pd.DataFrame(
+                columns=[
+                    "date",
+                    "title",
+                    "report type",
+                    "report category",
+                    "exchange rate",
+                    "rate change",
+                    "link",
+                ]
+            ),
+            [],
+        )
+
+    soup = BeautifulSoup(response.text, "html.parser")
 
     os.makedirs(REPORTS_PATH, exist_ok=True)
 
@@ -286,7 +306,7 @@ def scrape(
 
     summaries = "*No PDF to summary*"
     if "PDF" in download_file_types:
-        summaries = get_summaries(downloaded_file_names, company)
+        summaries = get_summaries(downloaded_file_names, company, model_name)
 
     if if_downloaded:
         return (
