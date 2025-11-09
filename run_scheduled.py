@@ -54,7 +54,7 @@ def run_job(job_name: str) -> bool:
     
     log(f"📋 Konfiguracja:")
     log(f"   Firma: {config.company}")
-    log(f"   Okres: {config.date_from} - {config.date_to}")
+    log(f"   Limit raportów: {config.report_limit}")
     log(f"   Model: {config.model}")
     
     # Initialize execution log in database (v2.0)
@@ -68,27 +68,33 @@ def run_job(job_name: str) -> bool:
         execution_id = insert_job_execution(job_name, status='running')
         log(f"📊 Execution logged to database (ID: {execution_id})")
         
+        log(f"📅 Pobieranie wszystkich dostępnych raportów (limit: {config.report_limit})...")
+        
         # Wykonaj scraping
         log(f"🔍 Rozpoczynam scraping...")
         
+        # Use config fields if available, otherwise defaults
+        report_types = config.report_types if config.report_types else ["current", "quarterly", "semi-annual", "annual"]
+        report_categories = config.report_categories if config.report_categories else ["ESPI", "EBI"]
+        
         result = scrape(
             company=config.company,
-            limit=100,  # Domyślny limit wyników
-            date=f"{config.date_from} - {config.date_to}",
-            report_type=["current", "quarterly", "semi-annual", "annual"],  # Wszystkie typy
-            report_category=["ESPI", "EBI"],  # Wszystkie kategorie
+            limit=config.report_limit,  # Limit z konfiguracji
+            date="",  # Empty string = get all available reports (no date filtering)
+            report_type=report_types,
+            report_category=report_categories,
             download_csv=False,
             download_file_types=["PDF", "HTML"],  # PDF i HTML
             model_name=config.model,
             job_name=job_name  # Przekaż nazwę zadania
         )
         
-        # scrape() zwraca tuple: (summary_text, dataframe, attachments, summary_report_path)
-        summary_text, df, attachments, summary_report_path = result
+        # scrape() zwraca tuple: (summary_text, dataframe, summaries, summary_report_path, collective_summary, downloaded_file_names)
+        summary_text, df, summaries, summary_report_path, collective_summary, downloaded_file_names = result
         
         # Count processed items
         reports_found = len(df) if df is not None else 0
-        documents_processed = len(attachments) if attachments else 0
+        documents_processed = len(downloaded_file_names) if isinstance(downloaded_file_names, list) else 0
         
         # Extract summary_report_id from database if summary was created
         # (insert_summary_report in scrape_script returns the ID)
@@ -107,12 +113,12 @@ def run_job(job_name: str) -> bool:
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(f"Raport GPW - {config.company}\n")
             f.write(f"Wygenerowano: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Okres: {config.date_from} - {config.date_to}\n")
+            f.write(f"Dzień: {config.date_to}\n")
             f.write(f"Model: {config.model}\n")
             f.write("="*80 + "\n\n")
             f.write(summary_text)  # Używamy rozpakowanego summary_text
             f.write("\n\n" + "="*80 + "\n")
-            f.write(f"Znaleziono {len(attachments)} załączników\n")
+            f.write(f"Znaleziono {documents_processed} załączników\n")
         
         log(f"✅ Wynik zapisany: {output_file}")
         
@@ -145,7 +151,7 @@ def run_job(job_name: str) -> bool:
         if execution_id:
             update_job_execution(
                 execution_id=execution_id,
-                status='error',
+                status='failed',
                 reports_found=reports_found,
                 documents_processed=documents_processed,
                 error_message=str(e)

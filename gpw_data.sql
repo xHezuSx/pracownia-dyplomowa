@@ -86,6 +86,7 @@ CREATE TABLE `scheduled_jobs` (
   `date_to` DATE DEFAULT NULL,
   `model` VARCHAR(100) DEFAULT 'llama3.2:latest',
   `cron_schedule` VARCHAR(100) NOT NULL COMMENT 'Cron expression (e.g. 0 9 * * 1)',
+  `report_limit` INT(11) DEFAULT 5 COMMENT 'Maximum number of reports to fetch (1-100)',
   `enabled` BOOLEAN DEFAULT TRUE,
   `report_types` JSON DEFAULT NULL COMMENT 'Array of report types ["current","quarterly"]',
   `report_categories` JSON DEFAULT NULL COMMENT 'Array of categories ["ESPI","EBI"]',

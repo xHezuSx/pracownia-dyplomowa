@@ -3,3 +3,7 @@ __pycache__/
 *.pyc   
 .idea/
 REPORTS/
+scheduled_results/
+logs/
+.DS_Store
+SUMMARY_REPORTS/

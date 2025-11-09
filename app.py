@@ -139,9 +139,9 @@ def run_scrape_ui(
         model_name,
     )
     
-    # Rozpakuj wynik (NOWE: 5 elementów)
-    if len(result) == 5:
-        summary_text, df, attachments, summary_report_path, collective_summary = result
+    # Rozpakuj wynik (NOWE: 6 elementów)
+    if len(result) == 6:
+        summary_text, df, summaries, summary_report_path, collective_summary, downloaded_files = result
         
         # Dodaj info o zbiorczym raporcie do statusu
         if summary_report_path:
@@ -151,13 +151,19 @@ def run_scrape_ui(
         if not collective_summary or collective_summary.strip() == "":
             collective_summary = "*Brak zbiorczego podsumowania (nie wygenerowano streszczeń)*"
         
-        result = (summary_text, df, attachments, collective_summary)
-    else:
-        # Stara wersja (4 elementy) - fallback
-        summary_text, df, attachments, summary_report_path = result
+        result = (summary_text, df, summaries, collective_summary)
+    elif len(result) == 5:
+        # Fallback dla starej wersji (5 elementów)
+        summary_text, df, summaries, summary_report_path, collective_summary = result
         if summary_report_path:
             summary_text += f"\n\n📄 **Zbiorczy raport zapisany:** `{summary_report_path}`"
-        result = (summary_text, df, attachments, "*Brak zbiorczego podsumowania*")
+        result = (summary_text, df, summaries, collective_summary)
+    else:
+        # Bardzo stara wersja (4 elementy) - fallback
+        summary_text, df, summaries, summary_report_path = result
+        if summary_report_path:
+            summary_text += f"\n\n📄 **Zbiorczy raport zapisany:** `{summary_report_path}`"
+        result = (summary_text, df, summaries, "*Brak zbiorczego podsumowania*")
     
     yield result
 
@@ -176,6 +182,64 @@ def get_model_choices():
 # ============================================================================
 # ZAKŁADKA 2: HARMONOGRAM - Funkcje pomocnicze
 # ============================================================================
+
+def schedule_to_cron(frequency: str, time_hour: int, time_minute: int, day_of_week: str = None, day_of_month: int = None):
+    """
+    Konwertuje prosty opis harmonogramu na cron expression.
+    
+    Args:
+        frequency: 'daily', 'weekly', 'monthly', 'custom'
+        time_hour: Godzina (0-23)
+        time_minute: Minuta (0-59)
+        day_of_week: 'Monday', 'Tuesday', ... (dla weekly)
+        day_of_month: 1-31 (dla monthly)
+    
+    Returns:
+        str: Cron expression (format: minute hour day month weekday)
+    """
+    dow_mapping = {
+        'Poniedziałek': '1',
+        'Wtorek': '2',
+        'Środa': '3',
+        'Czwartek': '4',
+        'Piątek': '5',
+        'Sobota': '6',
+        'Niedziela': '0'
+    }
+    
+    if frequency == 'Codziennie':
+        return f"{time_minute} {time_hour} * * *"
+    elif frequency == 'Co tydzień':
+        dow = dow_mapping.get(day_of_week, '1')
+        return f"{time_minute} {time_hour} * * {dow}"
+    elif frequency == 'Co miesiąc':
+        dom = day_of_month if day_of_month else 1
+        return f"{time_minute} {time_hour} {dom} * *"
+    else:
+        return f"{time_minute} {time_hour} * * *"
+
+
+def cron_to_human_readable(cron_expr: str) -> str:
+    """Konwertuje cron expression na czytelny opis."""
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        return cron_expr
+    
+    minute, hour, day, month, weekday = parts
+    
+    time_str = f"{hour}:{minute.zfill(2)}"
+    
+    if day == '*' and month == '*' and weekday == '*':
+        return f"Codziennie o {time_str}"
+    elif day == '*' and month == '*' and weekday != '*':
+        dow_names = ['Niedziela', 'Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota']
+        dow_name = dow_names[int(weekday)] if weekday.isdigit() and int(weekday) < 7 else f"dzień {weekday}"
+        return f"Co tydzień w {dow_name} o {time_str}"
+    elif day != '*' and month == '*' and weekday == '*':
+        return f"Co miesiąc {day}. dnia o {time_str}"
+    else:
+        return cron_expr
+
 
 def get_all_configs_as_text():
     """Zwraca listę wszystkich konfiguracji jako sformatowany tekst."""
@@ -271,6 +335,179 @@ def create_new_config(job_name, company, date_from, date_to, model, cron_schedul
         )
     except Exception as e:
         return (f"❌ Błąd: {e}", get_all_configs_as_text())
+
+
+def create_new_config_advanced(job_name, company, date_from, date_to, model, cron_schedule, description, enabled, report_limit=100, report_types=None, report_categories=None):
+    """
+    Tworzy nową konfigurację z zaawansowanymi opcjami.
+    
+    NOTE: date_from i date_to są przechowywane dla kompatybilności, ale nieużywane.
+    Pobierane są wszystkie dostępne raporty (bez ograniczenia zakresu dat).
+    report_limit określa maksymalną liczbę wyników wyszukiwania.
+    """
+    try:
+        # Konwersja dat - gr.DateTime może zwrócić string, datetime, float (timestamp) lub None
+        def format_date(date_input):
+            if not date_input:
+                return ""
+            
+            # Float timestamp z Gradio DateTime
+            if isinstance(date_input, (int, float)):
+                try:
+                    from datetime import datetime as dt
+                    parsed = dt.fromtimestamp(date_input)
+                    return parsed.strftime("%d-%m-%Y")
+                except:
+                    return ""
+            
+            # String ISO format
+            if isinstance(date_input, str):
+                try:
+                    parsed = datetime.fromisoformat(date_input.replace('Z', '+00:00'))
+                    return parsed.strftime("%d-%m-%Y")
+                except:
+                    # Może już jest w formacie dd-mm-yyyy
+                    if '-' in date_input and len(date_input) == 10:
+                        return date_input
+                    return ""
+            
+            # Obiekt datetime
+            if hasattr(date_input, 'strftime'):
+                return date_input.strftime("%d-%m-%Y")
+            
+            return ""
+        
+        config = ScrapingConfig(
+            job_name=job_name,
+            company=company,
+            date_from=format_date(date_from),
+            date_to=format_date(date_to),
+            model=model,
+            cron_schedule=cron_schedule,
+            enabled=enabled,
+            report_limit=report_limit,
+            description=description,
+            report_types=report_types if report_types else None,
+            report_categories=report_categories if report_categories else None
+        )
+        
+        manager = ConfigManager()
+        manager.save_config(config)
+        
+        return (
+            f"✅ Konfiguracja '{job_name}' została zapisana!",
+            get_all_configs_as_text()
+        )
+    except Exception as e:
+        return (f"❌ Błąd: {e}", get_all_configs_as_text())
+
+
+def run_job_now(job_name):
+    """
+    Ręcznie uruchamia zadanie bez czekania na harmonogram cron.
+    """
+    import subprocess
+    import sys
+    
+    if not job_name or job_name.strip() == "":
+        return "❌ Wybierz zadanie do uruchomienia"
+
+    try:
+        # Uruchom run_scheduled.py w tle
+        python_exe = sys.executable
+        script_path = os.path.join(os.path.dirname(__file__), "run_scheduled.py")
+        
+        result = subprocess.run(
+            [python_exe, script_path, job_name],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 min timeout
+        )
+        
+        output = f"▶️ Uruchomiono zadanie '{job_name}'\n\n"
+        output += "📝 **Output:**\n```\n"
+        output += result.stdout if result.stdout else "(brak output)"
+        output += "\n```\n"
+        
+        if result.stderr:
+            output += "\n⚠️ **Errors:**\n```\n"
+            output += result.stderr
+            output += "\n```\n"
+        
+        if result.returncode == 0:
+            output += "\n✅ **Status:** Zakończone pomyślnie"
+        else:
+            output += f"\n❌ **Status:** Błąd (kod {result.returncode})"
+        
+        return output
+        
+    except subprocess.TimeoutExpired:
+        return f"⏱️ Przekroczono limit czasu (5 min) dla zadania '{job_name}'"
+    except Exception as e:
+        return f"❌ Błąd uruchamiania: {e}"
+
+
+def get_execution_history(job_filter=None, limit=20):
+    """
+    Pobiera historię wykonań zadań z bazy danych.
+    
+    Returns:
+        List of lists for Gradio DataFram: [job_name, status, started_at, duration, reports_found, wyniki, error_msg]
+    """
+    from database_connection import get_job_execution_logs
+    from pathlib import Path
+    
+    try:
+        logs = get_job_execution_logs(job_name=job_filter if job_filter else None, limit=limit)
+        
+        rows = []
+        for log in logs:
+            # Status icon
+            status_icon = {
+                'success': '✅ Sukces',
+                'failed': '❌ Błąd',
+                'running': '⏳ W trakcie',
+                'no_reports': 'ℹ️ Brak raportów'
+            }.get(log.get('status', 'unknown'), '❓ Nieznany')
+            
+            # Duration calculation
+            started = log.get('started_at')
+            finished = log.get('finished_at')
+            duration = "N/A"
+            if started and finished:
+                duration_sec = (finished - started).total_seconds()
+                if duration_sec < 60:
+                    duration = f"{duration_sec:.1f}s"
+                else:
+                    duration = f"{duration_sec/60:.1f}min"
+            
+            # Error message (truncate if too long)
+            error_msg = log.get('error_message', '')
+            if error_msg and len(error_msg) > 100:
+                error_msg = error_msg[:97] + "..."
+            
+            # Result file info
+            log_file = log.get('log_file_path', '')
+            results_info = "-"
+            if log_file and Path(log_file).exists():
+                job_name = log.get('job_name', '')
+                docs = log.get('documents_processed', 0)
+                results_info = f"📄 {docs} doc" if docs > 0 else f"📂 Log"
+            
+            rows.append([
+                log.get('job_name', 'N/A'),
+                status_icon,
+                started.strftime('%Y-%m-%d %H:%M:%S') if started else 'N/A',
+                duration,
+                log.get('reports_found', 0),
+                results_info,
+                error_msg or '-'
+            ])
+        
+        return rows if rows else [["Brak historii wykonań", "-", "-", "-", "-", "-", "-"]]
+        
+    except Exception as e:
+        return [[f"Błąd: {e}", "-", "-", "-", "-", "-"]]
 
 
 def create_from_template_ui(template_name, company):
@@ -528,233 +765,248 @@ with gr.Blocks(title="GPW Scraper") as demo:
             )
         
         # ====================================================================
-        # ZAKŁADKA 2: HARMONOGRAM
-        # ====================================================================
-        with gr.Tab("⏰ Harmonogram"):
-            gr.Markdown("### Automatyczne raporty - Zarządzanie harmonogramem")
-            
-            with gr.Tabs():
-                # Zakładka 2.1: Nowa konfiguracja
-                with gr.Tab("➕ Nowa konfiguracja"):
-                    gr.Markdown("#### Utwórz nową konfigurację zadania")
-                    
-                    with gr.Row():
-                        with gr.Column():
-                            new_job_name = gr.Textbox(
-                                label="Nazwa zadania",
-                                placeholder="np. asseco_tygodniowy",
-                                info="Unikalna nazwa (bez spacji)"
-                            )
-                            new_company = gr.Textbox(
-                                label="Nazwa firmy",
-                                placeholder="np. Asseco"
-                            )
-                            
-                            with gr.Row():
-                                new_date_from = gr.DateTime(
-                                    label="Data od",
-                                    include_time=False
-                                )
-                                new_date_to = gr.DateTime(
-                                    label="Data do",
-                                    include_time=False
-                                )
-                            
-                            new_model = gr.Dropdown(
-                                label="Model Ollama",
-                                choices=["llama3.2:latest", "gemma:7b", "qwen2.5:7b"],
-                                value="llama3.2:latest"
-                            )
-                        
-                        with gr.Column():
-                            new_cron = gr.Textbox(
-                                label="Harmonogram cron",
-                                placeholder="0 9 * * 1",
-                                info="Format: minuta godzina dzień miesiąc dzień_tygodnia"
-                            )
-                            
-                            gr.Markdown(
-                                """
-                                **Przykłady:**
-                                - `0 9 * * *` - codziennie o 9:00
-                                - `0 9 * * 1` - każdy poniedziałek o 9:00
-                                - `0 10 1 * *` - 1. dzień miesiąca o 10:00
-                                - `*/30 * * * *` - co 30 minut
-                                """
-                            )
-                            
-                            validate_cron_btn = gr.Button("Sprawdź wyrażenie cron")
-                            cron_validation_output = gr.Textbox(label="Walidacja")
-                            
-                            new_description = gr.Textbox(
-                                label="Opis",
-                                placeholder="Krótki opis zadania"
-                            )
-                            
-                            new_enabled = gr.Checkbox(
-                                label="Aktywne",
-                                value=True
-                            )
-                    
-                    create_config_btn = gr.Button("✨ Utwórz konfigurację", variant="primary")
-                    create_output = gr.Textbox(label="Status")
-                    configs_display_1 = gr.Markdown(value=get_all_configs_as_text())
-                    
-                    validate_cron_btn.click(
-                        fn=validate_cron_expression_ui,
-                        inputs=[new_cron],
-                        outputs=[cron_validation_output]
-                    )
-                    
-                    create_config_btn.click(
-                        fn=create_new_config,
-                        inputs=[new_job_name, new_company, new_date_from, new_date_to, new_model, new_cron, new_description, new_enabled],
-                        outputs=[create_output, configs_display_1]
-                    )
-                
-                # Zakładka 2.2: Szablony (disabled in v2.0)
-                with gr.Tab("📋 Szablony"):
-                    gr.Markdown("#### ⚠️ Funkcja szablonów została usunięta w wersji 2.0")
-                    gr.Markdown("Użyj zakładki **'Utwórz Nowy'** aby stworzyć nową konfigurację.")
-                    
-                    template_name = gr.Dropdown(
-                        label="Wybierz szablon (nieaktywne)",
-                        choices=["Funkcja wyłączona"],
-                        value="Funkcja wyłączona",
-                        interactive=False
-                    )
-                    
-                    template_company = gr.Textbox(
-                        label="Nazwa firmy",
-                        placeholder="Funkcja wyłączona",
-                        interactive=False
-                    )
-                    
-                    gr.Markdown(
-                        """
-                        **Dostępne szablony:**
-                        - **codzienny_raport**: Raport z ostatnich 24h, codziennie o 8:00
-                        - **tygodniowy_raport**: Raport z ostatnich 7 dni, poniedziałki o 9:00
-                        - **miesieczny_raport**: Raport z ostatnich 30 dni, 1. dnia miesiąca o 10:00
-                        """
-                    )
-                    
-                    create_from_template_btn = gr.Button("✨ Utwórz z szablonu", variant="primary")
-                    template_output = gr.Textbox(label="Status")
-                    configs_display_2 = gr.Markdown(value=get_all_configs_as_text())
-                    
-                    create_from_template_btn.click(
-                        fn=create_from_template_ui,
-                        inputs=[template_name, template_company],
-                        outputs=[template_output, configs_display_2]
-                    )
-                
-                # Zakładka 2.3: Konfiguracje
-                with gr.Tab("📄 Konfiguracje"):
-                    gr.Markdown("#### Zarządzaj konfiguracjami")
-                    
-                    refresh_configs_btn = gr.Button("🔄 Odśwież listę")
-                    configs_display_3 = gr.Markdown(value=get_all_configs_as_text())
-                    
-                    gr.Markdown("---")
-                    gr.Markdown("#### Usuń konfigurację")
-                    
-                    with gr.Row():
-                        delete_job_name = gr.Textbox(
-                            label="Nazwa zadania do usunięcia",
-                            placeholder="np. asseco_tygodniowy"
-                        )
-                        delete_btn = gr.Button("🗑️ Usuń", variant="stop")
-                    
-                    delete_output = gr.Textbox(label="Status")
-                    
-                    gr.Markdown("---")
-                    gr.Markdown("#### Import / Export")
-                    
-                    with gr.Row():
-                        export_job_name = gr.Textbox(
-                            label="Nazwa zadania do eksportu",
-                            placeholder="np. asseco_tygodniowy"
-                        )
-                        export_btn = gr.Button("📤 Eksportuj")
-                    
-                    export_output = gr.Textbox(label="Ścieżka pliku")
-                    export_file = gr.File(label="Plik do pobrania")
-                    
-                    import_file = gr.File(
-                        label="📥 Importuj konfigurację z pliku JSON",
-                        file_types=[".json"]
-                    )
-                    import_btn = gr.Button("📥 Importuj")
-                    import_output = gr.Textbox(label="Status")
-                    
-                    refresh_configs_btn.click(
-                        fn=get_all_configs_as_text,
-                        inputs=[],
-                        outputs=[configs_display_3]
-                    )
-                    
-                    delete_btn.click(
-                        fn=delete_config_ui,
-                        inputs=[delete_job_name],
-                        outputs=[delete_output, configs_display_3]
-                    )
-                    
-                    export_btn.click(
-                        fn=export_config_ui,
-                        inputs=[export_job_name],
-                        outputs=[export_output, export_file]
-                    )
-                    
-                    import_btn.click(
-                        fn=import_config_ui,
-                        inputs=[import_file],
-                        outputs=[import_output, configs_display_3]
-                    )
-                
-                # Zakładka 2.4: Crontab
-                with gr.Tab("🔧 Crontab"):
-                    gr.Markdown("#### Instalacja zadań w systemie cron")
-                    
-                    gr.Markdown(
-                        """
-                        **Uwaga:** Do instalacji zadań w crontab potrzebne są uprawnienia systemowe.
-                        Upewnij się, że masz zainstalowany `cron` w systemie.
-                        
-                        ```bash
-                        # Sprawdź czy cron działa
-                        systemctl status cron
-                        ```
-                        """
-                    )
-                    
-                    with gr.Row():
-                        install_cron_btn = gr.Button("✅ Zainstaluj zadania do crontab", variant="primary")
-                        uninstall_cron_btn = gr.Button("🗑️ Usuń zadania z crontab", variant="stop")
-                    
-                    cron_output = gr.Textbox(label="Status")
-                    
-                    refresh_jobs_btn = gr.Button("🔄 Odśwież listę zadań")
-                    jobs_display = gr.Markdown(value=get_installed_jobs_as_text())
-                    
-                    install_cron_btn.click(
-                        fn=install_cron_jobs,
-                        inputs=[],
-                        outputs=[cron_output, jobs_display]
-                    )
-                    
-                    uninstall_cron_btn.click(
-                        fn=uninstall_cron_jobs,
-                        inputs=[],
-                        outputs=[cron_output, jobs_display]
-                    )
-                    
-                    refresh_jobs_btn.click(
-                        fn=get_installed_jobs_as_text,
-                        inputs=[],
-                        outputs=[jobs_display]
-                    )
         
+        # ====================================================================
+        # ZAKŁADKA 2: AUTOMATYZACJA (NOWY PROSTY INTERFEJS)
+        # ====================================================================
+        with gr.Tab("⏰ Automatyzacja"):
+            gr.Markdown("## 🤖 Automatyczne raporty - Proste i intuicyjne")
+            
+            # Sekcja 1: Utwórz nowe zadanie
+            with gr.Accordion("➕ Utwórz nowe zadanie", open=True):
+                gr.Markdown("### Szybka konfiguracja zadania")
+                
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        auto_job_name = gr.Textbox(
+                            label="📝 Nazwa zadania",
+                            placeholder="np. PKO_codzienny",
+                            info="Bez spacji (użyj _ zamiast)"
+                        )
+                        auto_company = gr.Textbox(label="🏢 Firma", placeholder="np. PKO")
+                        
+                        auto_report_limit = gr.Slider(
+                            label="📝 Ile raportów pobrać?",
+                            minimum=1,
+                            maximum=100,
+                            value=5,
+                            step=1,
+                            info="Limit wyników wyszukiwania"
+                        )
+                        
+                        auto_model = gr.Dropdown(
+                            label="🤖 Model AI",
+                            choices=["llama3.2:latest", "gemma:7b", "qwen2.5:7b"],
+                            value="llama3.2:latest"
+                        )
+                    
+                    with gr.Column(scale=1):
+                        gr.Markdown("### ⏰ Harmonogram")
+                        auto_frequency = gr.Dropdown(
+                            label="Częstotliwość",
+                            choices=["Codziennie", "Co tydzień", "Co miesiąc"],
+                            value="Codziennie"
+                        )
+                        
+                        with gr.Row():
+                            auto_hour = gr.Slider(label="Godzina", minimum=0, maximum=23, value=9, step=1)
+                            auto_minute = gr.Slider(label="Minuta", minimum=0, maximum=59, value=0, step=5)
+                        
+                        auto_day_of_week = gr.Dropdown(
+                            label="Dzień tygodnia",
+                            choices=["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"],
+                            value="Poniedziałek",
+                            visible=False
+                        )
+                        
+                        auto_day_of_month = gr.Slider(
+                            label="Dzień miesiąca",
+                            minimum=1, maximum=31, value=1, step=1, visible=False
+                        )
+                        
+                        auto_schedule_preview = gr.Markdown("**⏰ Codziennie o 09:00**")
+                        
+                        def update_preview(freq, hour, minute, dow, dom):
+                            time_str = f"{int(hour):02d}:{int(minute):02d}"
+                            if freq == "Codziennie":
+                                return f"**⏰ Codziennie o {time_str}**"
+                            elif freq == "Co tydzień":
+                                return f"**⏰ Co tydzień w {dow} o {time_str}**"
+                            else:
+                                return f"**⏰ Co miesiąc {int(dom)}. dnia o {time_str}**"
+                        
+                        def toggle_fields(freq):
+                            if freq == "Co tydzień":
+                                return gr.update(visible=True), gr.update(visible=False)
+                            elif freq == "Co miesiąc":
+                                return gr.update(visible=False), gr.update(visible=True)
+                            return gr.update(visible=False), gr.update(visible=False)
+                        
+                        auto_frequency.change(fn=toggle_fields, inputs=[auto_frequency], outputs=[auto_day_of_week, auto_day_of_month])
+                        
+                        for comp in [auto_frequency, auto_hour, auto_minute, auto_day_of_week, auto_day_of_month]:
+                            comp.change(fn=update_preview, inputs=[auto_frequency, auto_hour, auto_minute, auto_day_of_week, auto_day_of_month], outputs=[auto_schedule_preview])
+                
+                gr.Markdown("---")
+                gr.Markdown("### ⚙️ Opcje zaawansowane (opcjonalne)")
+                
+                with gr.Accordion("🔧 Szczegóły scrapingu", open=False):
+                    with gr.Row():
+                        auto_report_types = gr.CheckboxGroup(
+                            label="📑 Typy raportów",
+                            choices=["current", "quarterly", "semi-annual", "annual", "interim"],
+                            value=["current", "quarterly", "semi-annual", "annual"],
+                            info="Wybierz, które typy raportów pobrać"
+                        )
+                        
+                        auto_report_categories = gr.CheckboxGroup(
+                            label="📂 Kategorie",
+                            choices=["ESPI", "EBI"],
+                            value=["ESPI", "EBI"],
+                            info="ESPI = raporty giełdowe, EBI = raporty bankowe"
+                        )
+                
+                create_job_btn = gr.Button("✨ Utwórz zadanie", variant="primary", size="lg")
+                create_job_output = gr.Textbox(label="Status")
+                
+                def create_job_simple(job_name, company, report_limit, model, freq, h, m, dow, dom, rep_types, rep_cats):
+                    cron = schedule_to_cron(freq, int(h), int(m), dow, int(dom))
+                    # Use advanced options if provided
+                    report_types = rep_types if rep_types else None
+                    report_categories = rep_cats if rep_cats else None
+                    # Use today's date for both date_from and date_to (compatibility), report_limit is the key param
+                    from datetime import datetime as dt
+                    today_str = dt.now().strftime("%d-%m-%Y")
+                    return create_new_config_advanced(job_name, company, today_str, today_str, model, cron, f"{freq} - {company}", True, int(report_limit), report_types, report_categories)[0]
+                
+                create_job_btn.click(
+                    fn=create_job_simple,
+                    inputs=[auto_job_name, auto_company, auto_report_limit, auto_model, auto_frequency, auto_hour, auto_minute, auto_day_of_week, auto_day_of_month, auto_report_types, auto_report_categories],
+                    outputs=[create_job_output]
+                )
+            
+            gr.Markdown("---")
+            
+            # Sekcja 2: Zarządzaj zadaniami
+            with gr.Accordion("📋 Moje zadania", open=True):
+                refresh_btn = gr.Button("🔄 Odśwież", variant="secondary")
+                
+                jobs_table = gr.Dataframe(
+                    headers=["Nazwa", "Firma", "Model", "Harmonogram", "Status"],
+                    interactive=False
+                )
+                
+                def get_jobs_table():
+                    from config_manager import ConfigManager
+                    from cron_manager import CronManager
+                    
+                    mgr = ConfigManager()
+                    cron_mgr = CronManager()
+                    configs = mgr.list_configs()
+                    
+                    installed = set()
+                    for line in cron_mgr.get_installed_jobs():
+                        if "run_scheduled.py" in line:
+                            name = line.split("run_scheduled.py")[1].split()[0].strip() if len(line.split("run_scheduled.py")) > 1 else ""
+                            if name:
+                                installed.add(name)
+                    
+                    rows = []
+                    for cfg in configs:
+                        status = "✅ Aktywne" if cfg.enabled else "⏸️ Wyłączone"
+                        if cfg.enabled and cfg.job_name not in installed:
+                            status += " (brak w cron)"
+                        
+                        rows.append([
+                            cfg.job_name,
+                            cfg.company,
+                            cfg.model,
+                            cron_to_human_readable(cfg.cron_schedule),
+                            status
+                        ])
+                    
+                    return rows if rows else [["Brak zadań", "-", "-", "-", "-"]]
+                
+                refresh_btn.click(fn=get_jobs_table, outputs=[jobs_table])
+                demo.load(fn=get_jobs_table, outputs=[jobs_table])
+                
+                gr.Markdown("### ⚡ Akcje")
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("**▶️ Uruchom teraz**")
+                        run_select = gr.Dropdown(label="Wybierz zadanie", choices=[], interactive=True)
+                        run_btn = gr.Button("▶️ Uruchom", variant="primary")
+                        run_output = gr.Textbox(label="Log", lines=10)
+                    
+                    with gr.Column():
+                        gr.Markdown("**🗑️ Usuń zadanie**")
+                        del_select = gr.Dropdown(label="Wybierz zadanie", choices=[], interactive=True)
+                        del_btn = gr.Button("🗑️ Usuń", variant="stop")
+                        del_output = gr.Textbox(label="Status")
+                
+                def get_names():
+                    from config_manager import ConfigManager
+                    names = [c.job_name for c in ConfigManager().list_configs()]
+                    return gr.update(choices=names), gr.update(choices=names)
+                
+                refresh_btn.click(fn=get_names, outputs=[run_select, del_select])
+                demo.load(fn=get_names, outputs=[run_select, del_select])
+                
+                run_btn.click(fn=run_job_now, inputs=[run_select], outputs=[run_output])
+                del_btn.click(fn=delete_config_ui, inputs=[del_select], outputs=[del_output])
+            
+            gr.Markdown("---")
+            
+            # Sekcja 3: Instalacja w systemie
+            with gr.Accordion("🔧 Instalacja w systemie cron", open=False):
+                gr.Markdown("**Zainstaluj w crontab** aby zadania uruchamiały się automatycznie")
+                
+                with gr.Row():
+                    install_btn = gr.Button("✅ Zainstaluj", variant="primary")
+                    uninstall_btn = gr.Button("🗑️ Odinstaluj", variant="stop")
+                
+                cron_status = gr.Textbox(label="Status", lines=3)
+                
+                install_btn.click(fn=install_cron_jobs, outputs=[cron_status])
+                uninstall_btn.click(fn=uninstall_cron_jobs, outputs=[cron_status])
+                
+                refresh_cron_btn = gr.Button("🔄 Pokaż zainstalowane")
+                cron_display = gr.Markdown(value=get_installed_jobs_as_text())
+                refresh_cron_btn.click(fn=get_installed_jobs_as_text, outputs=[cron_display])
+            
+            gr.Markdown("---")
+            
+            # Sekcja 4: Historia
+            with gr.Accordion("📊 Historia wykonań", open=True):
+                gr.Markdown("### 📜 Ostatnie uruchomienia")
+                
+                with gr.Row():
+                    hist_filter = gr.Dropdown(
+                        label="Filtruj",
+                        choices=["Wszystkie"],
+                        value="Wszystkie"
+                    )
+                    hist_refresh = gr.Button("🔄 Odśwież")
+                
+                hist_table = gr.Dataframe(
+                    headers=["Zadanie", "Status", "Start", "Czas", "Raporty", "Wyniki", "Błąd"],
+                    interactive=False
+                )
+                
+                def refresh_hist(flt):
+                    return get_execution_history(None if flt == "Wszystkie" else flt, 30)
+                
+                hist_refresh.click(fn=refresh_hist, inputs=[hist_filter], outputs=[hist_table])
+                demo.load(fn=lambda: get_execution_history(None, 30), outputs=[hist_table])
+                
+                def update_filter():
+                    from config_manager import ConfigManager
+                    names = [c.job_name for c in ConfigManager().list_configs()]
+                    return gr.update(choices=["Wszystkie"] + names)
+                
+                refresh_btn.click(fn=update_filter, outputs=[hist_filter])
+
         # ====================================================================
         # ZAKŁADKA 3: AKTYWNE HARMONOGRAMY
         # ====================================================================
@@ -895,13 +1147,32 @@ with gr.Blocks(title="GPW Scraper") as demo:
                     if not os.path.exists(file_path):
                         return f"Plik nie istnieje: {file_path}", None
                     
-                    # Wczytaj zawartość
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                    # Check file format
+                    file_ext = os.path.splitext(file_path)[1].lower()
                     
-                    return content, file_path
+                    if file_ext == '.pdf':
+                        # PDF cannot be displayed as text, only download
+                        return (
+                            f"📄 **Raport PDF**\n\n"
+                            f"**ID:** {report['id']}\n"
+                            f"**Zadanie:** {report['job_name']}\n"
+                            f"**Firma:** {report['company']}\n"
+                            f"**Data utworzenia:** {report['created_at']}\n"
+                            f"**Rozmiar:** {report['file_size'] / 1024:.1f} KB\n\n"
+                            f"⬇️ **Użyj przycisku 'Pobierz plik' poniżej aby pobrać PDF**",
+                            file_path
+                        )
+                    elif file_ext in ['.md', '.txt']:
+                        # Markdown/text can be displayed
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        return content, file_path
+                    else:
+                        return f"⚠️ Nieobsługiwany format pliku: {file_ext}", file_path
+                    
                 except Exception as e:
-                    return f"Błąd: {e}", None
+                    import traceback
+                    return f"Błąd: {e}\n\n{traceback.format_exc()}", None
             
             search_reports_btn.click(
                 fn=search_summary_reports,

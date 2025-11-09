@@ -22,7 +22,9 @@ from database_connection import (
 """
 Specify `REPORT_PATH` to save all downloaded reports anywhere you want
 """
-REPORTS_PATH = "./REPORTS/"
+# Use absolute path based on script location to avoid issues with working directory
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPORTS_PATH = os.path.join(SCRIPT_DIR, "REPORTS")
 
 URL = "https://www.gpw.pl/ajaxindex.php"
 
@@ -173,7 +175,7 @@ def get_summaries(files: list, company: str, model_name: str = "llama3.2:latest"
     print(f"Processing {len(document_files)} document files for {company}...")
     
     for i, f in enumerate(document_files, 1):
-        path = f"./REPORTS/{company}/{f}"
+        path = os.path.join(REPORTS_PATH, company, f)
         text += f"\n## File {i}/{len(document_files)}: {f} ##\n"
         if os.path.exists(path):
             print(f"  Summarizing {i}/{len(document_files)}: {f}...")
@@ -270,7 +272,7 @@ def generate_summary_report(
         Ścieżka do wygenerowanego pliku
     """
     # Utwórz katalog na zbiorcze raporty
-    summary_dir = "./SUMMARY_REPORTS"
+    summary_dir = os.path.join(SCRIPT_DIR, "SUMMARY_REPORTS")
     os.makedirs(summary_dir, exist_ok=True)
     
     # Nazwa pliku z timestampem
@@ -373,15 +375,21 @@ def generate_summary_report(
         filepath_pdf = filepath.replace('.md', '.pdf')
         HTML(string=full_html).write_pdf(filepath_pdf)
         
-        print(f"✅ PDF wygenerowany: {filepath_pdf}")
-        
-        # Zaktualizuj ścieżkę do zwrócenia (teraz PDF jest głównym plikiem)
-        filepath = filepath_pdf
-        file_format = 'pdf'
-        file_size = os.path.getsize(filepath_pdf)
+        # Verify file was created
+        if os.path.exists(filepath_pdf):
+            print(f"✅ PDF wygenerowany: {filepath_pdf}")
+            
+            # Zaktualizuj ścieżkę do zwrócenia (teraz PDF jest głównym plikiem)
+            filepath = filepath_pdf
+            file_format = 'pdf'
+            file_size = os.path.getsize(filepath_pdf)
+        else:
+            raise FileNotFoundError(f"PDF nie został utworzony: {filepath_pdf}")
         
     except Exception as e:
         print(f"⚠️  Błąd konwersji do PDF: {e}")
+        import traceback
+        traceback.print_exc()
         print(f"   Raport pozostanie w formacie MD")
         file_format = 'markdown'
         file_size = os.path.getsize(filepath)
@@ -454,8 +462,10 @@ def scrape(
                             "link",
                         ]
                     ),
-                    [],
+                    "",  # summaries (empty)
                     None,  # summary_report_path
+                    None,  # collective_summary
+                    [],  # downloaded_file_names
                 )
         else:
             # Pojedyncza data
@@ -475,8 +485,10 @@ def scrape(
                             "link",
                         ]
                     ),
-                    [],
+                    "",  # summaries (empty)
                     None,  # summary_report_path
+                    None,  # collective_summary
+                    [],  # downloaded_file_names
                 )
 
     payload = {
@@ -512,8 +524,10 @@ def scrape(
                     "link",
                 ]
             ),
-            [],
+            "",  # summaries (empty)
             None,  # summary_report_path
+            None,  # collective_summary
+            [],  # downloaded_file_names
         )
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -619,13 +633,15 @@ def scrape(
     output_info = ""
     if_downloaded = False
 
-    if not os.path.exists("./REPORTS"):
-        os.makedirs("./REPORTS")
-    if not os.path.exists(f"./REPORTS/{company}") and (
+    if not os.path.exists(REPORTS_PATH):
+        os.makedirs(REPORTS_PATH)
+    
+    company_dir = os.path.join(REPORTS_PATH, company)
+    if not os.path.exists(company_dir) and (
         len(download_file_types) != 0 or download_csv
     ):
         if_downloaded = True
-        os.makedirs(f"./REPORTS/{company}")
+        os.makedirs(company_dir)
 
     downloaded_file_names = []
 
@@ -641,7 +657,7 @@ def scrape(
                     company_name=company,
                     file_title=name,
                 )
-                file_path = f"./REPORTS/{company}/{filename}"
+                file_path = os.path.join(REPORTS_PATH, company, filename)
                 
                 # Download file
                 downloaded_file_names.append(filename)
@@ -680,8 +696,8 @@ def scrape(
         output_info += f"downloaded {downloaded_files} files "
 
     if download_csv:
-        report_df.to_csv(f"./REPORTS/{company}/{company}({limit}) report.csv")
-        # os.startfile(f"{current_path}\\REPORTS\\{company}\\{company}({limit}) report.csv")
+        csv_path = os.path.join(REPORTS_PATH, company, f"{company}({limit}) report.csv")
+        report_df.to_csv(csv_path)
         if_downloaded = True
         output_info += f"| CSV file saved"
 
@@ -705,12 +721,14 @@ def scrape(
         )
 
     if if_downloaded:
+        report_path = os.path.join(current_path, "REPORTS", company)
         return (
-            f"SUCCESS! {output_info}\n files saved in:\n\t\t {current_path}\\REPORTS\\{company}",
+            f"SUCCESS! {output_info}\n files saved in:\n\t\t {report_path}",
             report_df,
-            summaries,
+            summaries,  # Tekstowe podsumowania
             summary_report_path,
-            collective_summary,  # NOWE: zbiorczy raport do wyświetlenia w UI
+            collective_summary,
+            downloaded_file_names,  # Lista pobranych plików (6-ta wartość)
         )
 
-    return f"SUCCESS! {output_info}", report_df, summaries, summary_report_path, collective_summary
+    return f"SUCCESS! {output_info}", report_df, summaries, summary_report_path, collective_summary, []

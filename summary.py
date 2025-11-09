@@ -118,6 +118,12 @@ def summarize_document_with_kmeans_clustering(file_path: str, model_name: str = 
     texts = text_splitter.split_documents(pages)
     print(f"⏱️  [2/4] Podział na {len(texts)} chunków: {time.time() - step_start:.2f}s")
 
+    # Check if document has any text
+    if len(texts) == 0:
+        print(f"⚠️  Dokument pusty lub bez tekstu (tylko obrazy/skanowane)")
+        print(f"{'='*60}\n")
+        return f"❌ Brak tekstu do przetworzenia w: {os.path.basename(file_path)}"
+
     if len(pages) <= 2:
         num_clusters = 1
         num_predict = 50

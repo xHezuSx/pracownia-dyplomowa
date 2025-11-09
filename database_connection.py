@@ -2,12 +2,14 @@
 Database Connection Module v2.0 - English Unified Structure
 Supports: companies, reports, search_history, scheduled_jobs, 
           summary_reports, job_execution_log, downloaded_files
+Thread-safe with thread-local connections.
 """
 
 import os
 import pymysql
 import hashlib
 import json
+import threading
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
 from dotenv import load_dotenv
@@ -21,54 +23,95 @@ USER = os.getenv("DB_USER", "user")
 PASSWORD = os.getenv("DB_PASSWORD", "qwerty123")
 DATABASE = os.getenv("DB_NAME", "gpw data")
 
-# Global connection and cursor
-connection = None
-cursor = None
+# Thread-local storage for connections
+_thread_local = threading.local()
+
+def get_connection():
+    """Get thread-local database connection"""
+    if not hasattr(_thread_local, 'connection') or _thread_local.connection is None:
+        try:
+            _thread_local.connection = pymysql.connect(
+                host=HOST,
+                user=USER,
+                password=PASSWORD,
+                database=DATABASE,
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False,
+                connect_timeout=10,
+                read_timeout=30,
+                write_timeout=30,
+                charset='utf8mb4'
+            )
+        except Exception as e:
+            print(f"Database connection error: {e}")
+            _thread_local.connection = None
+    return _thread_local.connection
+
+def get_cursor():
+    """Get cursor for current thread's connection"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    if not hasattr(_thread_local, 'cursor') or _thread_local.cursor is None:
+        _thread_local.cursor = conn.cursor()
+    return _thread_local.cursor
+
+# Backward compatibility - connection and cursor as properties
+@property
+def connection():
+    """Get current thread's connection (backward compatibility)"""
+    return get_connection()
+
+@property  
+def cursor():
+    """Get current thread's cursor (backward compatibility)"""
+    return get_cursor()
+
+# Actually, Python doesn't support module-level properties, so use simple reassignment
+# This allows old code using `connection` and `cursor` to work
+def _get_globals():
+    """Update module globals for backward compatibility"""
+    import sys
+    current_module = sys.modules[__name__]
+    current_module.connection = get_connection()
+    current_module.cursor = get_cursor()
+    return current_module.connection, current_module.cursor
 
 def connect():
-    """Establish database connection"""
-    global connection, cursor
+    """Establish database connection for current thread"""
     try:
-        connection = pymysql.connect(
-            host=HOST,
-            user=USER,
-            password=PASSWORD,
-            database=DATABASE,
-            cursorclass=pymysql.cursors.DictCursor,  # Return results as dictionaries
-            autocommit=False,
-            connect_timeout=10,
-            read_timeout=30,
-            write_timeout=30,
-            charset='utf8mb4'
-        )
-        cursor = connection.cursor()
-        return True
+        conn = get_connection()
+        if conn:
+            get_cursor()
+            return True
+        return False
     except Exception as e:
         print(f"Database connection error: {e}")
         return False
 
 def ensure_connection():
     """Ensure database connection is alive, reconnect if needed"""
-    global connection, cursor
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            if connection is None:
+            conn = get_connection()
+            if conn is None:
                 if connect():
                     return True
             else:
                 # Test connection with ping
-                connection.ping(reconnect=True)
+                conn.ping(reconnect=True)
                 return True
         except Exception as e:
             # Connection failed, force reconnect
             try:
-                if connection:
-                    connection.close()
+                conn = get_connection()
+                if conn:
+                    conn.close()
             except:
                 pass
-            connection = None
-            cursor = None
+            _thread_local.connection = None
+            _thread_local.cursor = None
             
             if attempt < max_retries - 1:
                 # Try again
@@ -83,18 +126,28 @@ def ensure_connection():
 def execute_query(sql: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
     """
     Execute SQL query with automatic reconnect on packet sequence error.
+    Thread-safe implementation using thread-local connections.
     
     Returns:
     - None if INSERT/UPDATE/DELETE
     - Single dict if fetch_one=True
     - List of dicts if fetch_all=True
     """
-    global connection, cursor
     max_retries = 2
     
     for attempt in range(max_retries):
         try:
-            ensure_connection()
+            connection = get_connection()
+            cursor = get_cursor()
+            if not ensure_connection():
+                raise Exception("Could not establish database connection")
+            
+            conn = get_connection()
+            cursor = get_cursor()
+            
+            if conn is None or cursor is None:
+                raise Exception("Database connection or cursor is not initialized")
+            
             if params:
                 cursor.execute(sql, params)
             else:
@@ -105,21 +158,22 @@ def execute_query(sql: str, params: tuple = None, fetch_one: bool = False, fetch
             elif fetch_all:
                 return cursor.fetchall()
             else:
-                connection.commit()
+                conn.commit()
                 return cursor.lastrowid
                 
         except Exception as e:
             error_msg = str(e).lower()
             
             # Check for packet sequence or connection errors
-            if "packet sequence" in error_msg or "connection" in error_msg or "lost" in error_msg:
+            if "packet sequence" in error_msg or "connection" in error_msg or "lost" in error_msg or "protocol" in error_msg:
                 try:
-                    if connection:
-                        connection.close()
+                    conn = get_connection()
+                    if conn:
+                        conn.close()
                 except:
                     pass
-                connection = None
-                cursor = None
+                _thread_local.connection = None
+                _thread_local.cursor = None
                 
                 if attempt < max_retries - 1:
                     # Try to reconnect and retry
@@ -127,11 +181,16 @@ def execute_query(sql: str, params: tuple = None, fetch_one: bool = False, fetch
                         continue
             
             # If we get here, it's a real error
-            connection.rollback()
+            try:
+                conn = get_connection()
+                if conn:
+                    conn.rollback()
+            except:
+                pass
             raise
 
-# Initialize connection
-connect()
+# Note: Connections are now thread-local and created on-demand
+# No need for global initialization
 
 # ============================================================================
 # COMPANIES TABLE - Company Management
@@ -141,6 +200,8 @@ def insert_company(name: str, full_name: str = None, sector: str = None) -> int:
     """Insert or get company ID"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         # Check if company exists
         company_id = get_company_id(name)
         if company_id:
@@ -163,6 +224,8 @@ def get_company_id(name: str) -> Optional[int]:
     """Get company ID by name"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT id FROM companies WHERE name LIKE %s"
         cursor.execute(sql, (name,))
         result = cursor.fetchone()
@@ -176,6 +239,8 @@ def get_all_companies() -> List[Dict]:
     """Get all companies"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM companies ORDER BY name"
         cursor.execute(sql)
         return cursor.fetchall()
@@ -207,6 +272,8 @@ def insert_report(
         # Convert DD-MM-YYYY → YYYY-MM-DD for MySQL
         if date:
             try:
+                connection = get_connection()
+                cursor = get_cursor()
                 date_obj = datetime.strptime(date, "%d-%m-%Y")
                 date = date_obj.strftime("%Y-%m-%d")
             except ValueError:
@@ -276,6 +343,8 @@ def get_reports(
 def calculate_md5(file_path: str) -> str:
     """Calculate MD5 hash of a file"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         hash_md5 = hashlib.md5()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
@@ -289,6 +358,8 @@ def calculate_md5(file_path: str) -> str:
 def file_exists_by_md5(md5_hash: str) -> bool:
     """Check if file already exists by MD5 hash"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT COUNT(*) as count FROM downloaded_files WHERE md5_hash = %s"
         cursor.execute(sql, (md5_hash,))
         result = cursor.fetchone()
@@ -311,6 +382,8 @@ def insert_downloaded_file(
 ) -> int:
     """Insert downloaded file record"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         # Check for duplicates
         if file_exists_by_md5(md5_hash):
             print(f"File already exists (MD5: {md5_hash})")
@@ -337,6 +410,8 @@ def insert_downloaded_file(
 def update_file_summary(file_id: int, summary_text: str):
     """Update file summary after AI processing"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = """
             UPDATE downloaded_files
             SET is_summarized = TRUE, summary_text = %s
@@ -353,6 +428,8 @@ def get_downloaded_files(company: str = None, is_summarized: bool = None) -> Lis
     """Get downloaded files with optional filters"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM downloaded_files WHERE 1=1"
         params = []
         
@@ -376,6 +453,8 @@ def get_downloaded_file_by_name(company: str, file_name: str) -> Optional[Dict]:
     """Get downloaded file by company and file name"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM downloaded_files WHERE company = %s AND file_name = %s LIMIT 1"
         cursor.execute(sql, (company, file_name))
         return cursor.fetchone()
@@ -400,7 +479,12 @@ def insert_search_history(
 ) -> int:
     """Insert search history record"""
     ensure_connection()
+    connection = None
+    cursor = None
     try:
+        connection = get_connection()
+        cursor = get_cursor()
+        
         # Convert empty date string to None
         if not report_date or report_date.strip() == "":
             report_date = None
@@ -430,7 +514,11 @@ def insert_search_history(
         connection.commit()
         return cursor.lastrowid
     except Exception as e:
-        connection.rollback()
+        if connection:
+            try:
+                connection.rollback()
+            except:
+                pass
         print(f"Error inserting search history: {e}")
         return None
 
@@ -439,6 +527,8 @@ def get_search_history(limit: int = 50) -> List[Dict]:
     """Get recent search history"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = """
             SELECT * FROM search_history
             ORDER BY created_at DESC
@@ -463,11 +553,34 @@ def insert_scheduled_job(
     model: str,
     cron_schedule: str,
     enabled: bool = True,
+    report_limit: int = 5,
     report_types: List[str] = None,
     report_categories: List[str] = None
 ) -> int:
     """Insert or update scheduled job"""
     try:
+        # Ensure report_limit column exists (compatibility with older schema)
+        try:
+            execute_query(
+                "ALTER TABLE scheduled_jobs ADD COLUMN report_limit INT DEFAULT 5 AFTER cron_schedule",
+                timeout=2
+            )
+        except:
+            pass  # Column already exists or error occurred
+        
+        # Convert date format from DD-MM-YYYY to YYYY-MM-DD
+        def convert_date(date_str):
+            if not date_str:
+                return None
+            if '-' in date_str and len(date_str) == 10:
+                parts = date_str.split('-')
+                if len(parts[0]) == 2:  # DD-MM-YYYY
+                    return f"{parts[2]}-{parts[1]}-{parts[0]}"
+            return date_str
+        
+        date_from = convert_date(date_from)
+        date_to = convert_date(date_to)
+        
         # Convert lists to JSON
         report_types_json = json.dumps(report_types) if report_types else None
         report_categories_json = json.dumps(report_categories) if report_categories else None
@@ -475,8 +588,8 @@ def insert_scheduled_job(
         sql = """
             INSERT INTO scheduled_jobs
             (job_name, company, date_from, date_to, model, cron_schedule,
-             enabled, report_types, report_categories)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             enabled, report_limit, report_types, report_categories)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 company = VALUES(company),
                 date_from = VALUES(date_from),
@@ -484,26 +597,54 @@ def insert_scheduled_job(
                 model = VALUES(model),
                 cron_schedule = VALUES(cron_schedule),
                 enabled = VALUES(enabled),
+                report_limit = VALUES(report_limit),
                 report_types = VALUES(report_types),
                 report_categories = VALUES(report_categories),
                 updated_at = NOW()
         """
-        cursor.execute(sql, (
+        
+        result = execute_query(sql, (
             job_name, company, date_from, date_to, model, cron_schedule,
-            enabled, report_types_json, report_categories_json
+            enabled, report_limit, report_types_json, report_categories_json
         ))
-        connection.commit()
-        return cursor.lastrowid
+        
+        return result if result else 0
     except Exception as e:
-        connection.rollback()
         print(f"Error inserting scheduled job: {e}")
-        return None
+        # Try again without report_limit column (backward compatibility)
+        try:
+            sql_fallback = """
+                INSERT INTO scheduled_jobs
+                (job_name, company, date_from, date_to, model, cron_schedule, enabled, report_types, report_categories)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    company = VALUES(company),
+                    date_from = VALUES(date_from),
+                    date_to = VALUES(date_to),
+                    model = VALUES(model),
+                    cron_schedule = VALUES(cron_schedule),
+                    enabled = VALUES(enabled),
+                    report_types = VALUES(report_types),
+                    report_categories = VALUES(report_categories),
+                    updated_at = NOW()
+            """
+            result = execute_query(sql_fallback, (
+                job_name, company, date_from, date_to, model, cron_schedule,
+                enabled, report_types_json, report_categories_json
+            ))
+            print(f"✅ Saved job without report_limit column (backward compat)")
+            return result if result else 0
+        except Exception as e2:
+            print(f"Error (fallback also failed): {e2}")
+            raise e
 
 
 def get_scheduled_job(job_name: str) -> Optional[Dict]:
     """Get scheduled job by name"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM scheduled_jobs WHERE job_name = %s"
         cursor.execute(sql, (job_name,))
         result = cursor.fetchone()
@@ -514,6 +655,10 @@ def get_scheduled_job(job_name: str) -> Optional[Dict]:
                 result['report_types'] = json.loads(result['report_types'])
             if result['report_categories']:
                 result['report_categories'] = json.loads(result['report_categories'])
+            
+            # Set default for report_limit if column doesn't exist
+            if 'report_limit' not in result or result['report_limit'] is None:
+                result['report_limit'] = 5
         
         return result
     except Exception as e:
@@ -548,6 +693,8 @@ def get_all_scheduled_jobs(enabled_only: bool = False) -> List[Dict]:
 def update_job_run_stats(job_name: str, next_run: datetime = None):
     """Update job statistics after execution"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = """
             UPDATE scheduled_jobs
             SET 
@@ -567,6 +714,8 @@ def update_job_run_stats(job_name: str, next_run: datetime = None):
 def delete_scheduled_job(job_name: str):
     """Delete scheduled job"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "DELETE FROM scheduled_jobs WHERE job_name = %s"
         cursor.execute(sql, (job_name,))
         connection.commit()
@@ -594,7 +743,12 @@ def insert_summary_report(
     tags: List[str] = None
 ) -> int:
     """Insert summary report record"""
+    connection = None
+    cursor = None
     try:
+        connection = get_connection()
+        cursor = get_cursor()
+        
         tags_json = json.dumps(tags) if tags else None
         
         # Convert DD-MM-YYYY → YYYY-MM-DD for MySQL (if needed)
@@ -627,8 +781,14 @@ def insert_summary_report(
         connection.commit()
         return cursor.lastrowid
     except Exception as e:
-        connection.rollback()
+        if connection:
+            try:
+                connection.rollback()
+            except:
+                pass
         print(f"Error inserting summary report: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -676,6 +836,8 @@ def get_summary_report_by_id(report_id: int) -> Optional[Dict]:
     """Get summary report by ID"""
     ensure_connection()
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM summary_reports WHERE id = %s"
         cursor.execute(sql, (report_id,))
         result = cursor.fetchone()
@@ -699,6 +861,8 @@ def insert_job_execution(
 ) -> int:
     """Insert job execution log (start of execution)"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = """
             INSERT INTO job_execution_log
             (job_name, status, started_at)
@@ -724,6 +888,8 @@ def update_job_execution(
 ):
     """Update job execution log (end of execution)"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = """
             UPDATE job_execution_log
             SET 
@@ -795,6 +961,8 @@ def get_active_jobs_view() -> List[Dict]:
 def get_company_stats_view() -> List[Dict]:
     """Get company statistics from v_company_stats view"""
     try:
+        connection = get_connection()
+        cursor = get_cursor()
         sql = "SELECT * FROM v_company_stats ORDER BY total_reports DESC"
         results = execute_query(sql, fetch_all=True)
         return results if results else []
@@ -809,12 +977,25 @@ def get_company_stats_view() -> List[Dict]:
 # ============================================================================
 
 def close_connection():
-    """Close database connection"""
-    global connection, cursor
-    if cursor:
-        cursor.close()
-    if connection:
-        connection.close()
+    """Close database connection for current thread"""
+    try:
+        connection = get_connection()
+        cursor = get_cursor()
+        cursor = get_cursor()
+        if cursor:
+            cursor.close()
+    except:
+        pass
+    
+    try:
+        conn = get_connection()
+        if conn:
+            conn.close()
+    except:
+        pass
+    
+    _thread_local.connection = None
+    _thread_local.cursor = None
 
 
 if __name__ == "__main__":

@@ -23,11 +23,12 @@ class ScrapingConfig:
     """Konfiguracja pojedynczego zadania scrapingu."""
     job_name: str  # Unikalna nazwa zadania
     company: str  # Nazwa firmy do monitorowania
-    date_from: str  # Data początkowa (dd-mm-yyyy)
-    date_to: str  # Data końcowa (dd-mm-yyyy)
+    date_from: str  # Data początkowa (dd-mm-yyyy) - deprecated, keep for compatibility
+    date_to: str  # Data końcowa (dd-mm-yyyy) - deprecated, keep for compatibility
     model: str  # Model Ollama do użycia
     cron_schedule: str  # Wyrażenie cron (np. "0 9 * * 1" = każdy poniedziałek o 9:00)
     enabled: bool = True  # Czy zadanie jest aktywne
+    report_limit: int = 5  # Limit wyników wyszukiwania (zamiast zakresu dat)
     report_types: Optional[List[str]] = None  # Typy raportów (EBI, ESPI, itp.)
     report_categories: Optional[List[str]] = None  # Kategorie raportów
     email_notify: Optional[str] = None  # Email do powiadomień (opcjonalnie)
@@ -67,6 +68,7 @@ class ScrapingConfig:
             model=row.get('model'),
             cron_schedule=row.get('cron_schedule'),
             enabled=bool(row.get('enabled', True)),
+            report_limit=row.get('report_limit', 5),
             report_types=row.get('report_types'),  # Already parsed from JSON by db module
             report_categories=row.get('report_categories'),
             last_run=row.get('last_run'),
@@ -114,6 +116,7 @@ class ConfigManager:
             model=config.model,
             cron_schedule=config.cron_schedule,
             enabled=config.enabled,
+            report_limit=config.report_limit,
             report_types=config.report_types,
             report_categories=config.report_categories
         )
