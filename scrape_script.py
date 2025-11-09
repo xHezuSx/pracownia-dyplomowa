@@ -44,6 +44,9 @@ def split_header(header) -> list:
         :-1
     ]  # I do not know what is the last parameter, so I delete it
     header = [el.strip() for el in header]
+    # Extract only date part (dd-MM-YYYY) from datetime string
+    if header and " " in header[0]:
+        header[0] = header[0].split()[0]
     if len(header) == 2:
         header.insert(2, "unknown")
     return header

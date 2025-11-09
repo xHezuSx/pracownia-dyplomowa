@@ -263,12 +263,7 @@ ConfigManager().save_config(config)
 
 ## 🔜 Przyszłe funkcje (TODO)
 
-- [ ] Email notifications (SMTP)
 - [ ] Agregowane raporty tygodniowe (podsumowanie podsumowań)
-- [ ] Dashboard Grafana z metrykami
-- [ ] Webhook notifications (Slack, Discord)
-- [ ] Retry logic przy błędach
-- [ ] Parallel execution dla wielu firm
 
 ## 📝 Struktura konfiguracji JSON
 

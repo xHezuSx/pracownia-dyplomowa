@@ -4,17 +4,22 @@ Supports: companies, reports, search_history, scheduled_jobs,
           summary_reports, job_execution_log, downloaded_files
 """
 
+import os
 import pymysql
 import hashlib
 import json
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
+from dotenv import load_dotenv
 
-# Database connection settings
-HOST = "localhost"
-USER = "user"
-PASSWORD = "qwerty123"
-DATABASE = "gpw data"
+# Load environment variables from .env file
+load_dotenv()
+
+# Database connection settings from environment variables
+HOST = os.getenv("DB_HOST", "localhost")
+USER = os.getenv("DB_USER", "user")
+PASSWORD = os.getenv("DB_PASSWORD", "qwerty123")
+DATABASE = os.getenv("DB_NAME", "gpw data")
 
 # Global connection and cursor
 connection = None
@@ -122,6 +127,10 @@ def insert_report(
 ) -> int:
     """Insert GPW report"""
     try:
+        # Convert date format: if contains time (space), extract only date part
+        if date and " " in date:
+            date = date.split()[0]
+        
         sql = """
             INSERT INTO reports 
             (company_id, date, title, report_type, report_category, 
@@ -297,6 +306,10 @@ def insert_search_history(
     """Insert search history record"""
     ensure_connection()
     try:
+        # Convert empty date string to None
+        if not report_date or report_date.strip() == "":
+            report_date = None
+        
         sql = """
             INSERT INTO search_history
             (company_name, report_amount, download_type, report_date,
