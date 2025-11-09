@@ -1,0 +1,11 @@
+{
+  "job_name": "nowytest",
+  "company": "kęty",
+  "date_from": "1761343200.0",
+  "date_to": "1769641200.0",
+  "model": "llama3.2:latest",
+  "cron_schedule": "*/30 * * * *",
+  "enabled": true,
+  "email_notify": null,
+  "description": ""
+}

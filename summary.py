@@ -2,11 +2,17 @@ from langchain_ollama import ChatOllama
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.summarize import load_summarize_chain
 from langchain.prompts import PromptTemplate
+import os
+import time
+
+# Force Ollama to use GPU by setting environment variable
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['OLLAMA_NUM_GPU'] = '1'
 
 # from langchain.document_loaders import PyPDFLoader
 # from langchain.document_transformers import EmbeddingsClusteringFilter
 # from langchain.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredHTMLLoader
 from langchain_community.document_transformers import EmbeddingsClusteringFilter
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -33,9 +39,43 @@ prompt = PromptTemplate(
     template="Summarize this financial text form polish GPW stock in no more than 200 words and use financial language:\n\n{text}, answer me in Polish language",
 )
 
+# Global LLM cache to avoid reloading model for each file
+_llm_cache = {}
+
+def get_cached_llm(model_name: str, num_predict: int) -> ChatOllama:
+    """Get or create cached LLM instance to avoid reloading model multiple times."""
+    cache_key = f"{model_name}_{num_predict}"
+    if cache_key not in _llm_cache:
+        print(f"Creating new LLM instance for {model_name} (num_predict={num_predict})")
+        _llm_cache[cache_key] = ChatOllama(
+            model=model_name,
+            temperature=0,
+            num_predict=num_predict,
+            num_gpu=1,  # Force use of 1 GPU
+            num_ctx=2048,  # Zmniejszony kontekst (domyślnie 4096) aby zmieścić się w VRAM
+        )
+    return _llm_cache[cache_key]
+
 
 def extract(file_path: str):
-    loader = PyPDFLoader(file_path)
+    """
+    Extract text from PDF or HTML file.
+    
+    Args:
+        file_path: Path to the file (PDF or HTML)
+    
+    Returns:
+        List of Document objects with extracted text
+    """
+    file_extension = os.path.splitext(file_path)[1].lower()
+    
+    if file_extension == '.pdf':
+        loader = PyPDFLoader(file_path)
+    elif file_extension in ['.html', '.htm']:
+        loader = UnstructuredHTMLLoader(file_path)
+    else:
+        raise ValueError(f"Unsupported file type: {file_extension}. Supported: .pdf, .html, .htm")
+    
     pages = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
     texts = text_splitter.split_documents(pages)
@@ -44,42 +84,80 @@ def extract(file_path: str):
 
 def summarize_document_with_kmeans_clustering(file_path: str, model_name: str = DEFAULT_MODEL):
     """
-    Summarize a PDF document using k-means clustering and an Ollama model.
+    Summarize a document (PDF or HTML) using k-means clustering and an Ollama model.
     
     Args:
-        file_path: Path to the PDF file
+        file_path: Path to the document file (PDF or HTML)
         model_name: Name of the Ollama model to use (default: DEFAULT_MODEL)
     
     Returns:
         String containing the summary or error message
     """
-    loader = PyPDFLoader(file_path)
+    file_extension = os.path.splitext(file_path)[1].lower()
+    file_type = "PDF" if file_extension == '.pdf' else "HTML"
+    
+    print(f"\n{'='*60}")
+    print(f"📄 Przetwarzanie {file_type}: {os.path.basename(file_path)}")
+    total_start = time.time()
+    
+    # 1. Ładowanie dokumentu
+    step_start = time.time()
+    if file_extension == '.pdf':
+        loader = PyPDFLoader(file_path)
+    elif file_extension in ['.html', '.htm']:
+        loader = UnstructuredHTMLLoader(file_path)
+    else:
+        return f"❌ Unsupported file type: {file_extension}"
+    
     pages = loader.load()
+    print(f"⏱️  [1/4] Wczytanie {file_type} ({len(pages)} stron/sekcji): {time.time() - step_start:.2f}s")
+    
+    # 2. Podział na chunki
+    step_start = time.time()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=0)
     texts = text_splitter.split_documents(pages)
+    print(f"⏱️  [2/4] Podział na {len(texts)} chunków: {time.time() - step_start:.2f}s")
 
     if len(pages) <= 2:
-        doc_filter = EmbeddingsClusteringFilter(
-            embeddings=embeddings, num_clusters=1, num_closest=1
-        )
-        llm = ChatOllama(model=model_name, temperature=0, num_predict=50)
+        num_clusters = 1
+        num_predict = 50
     elif len(pages) >= 40:
-        doc_filter = EmbeddingsClusteringFilter(
-            embeddings=embeddings, num_clusters=9, num_closest=1
-        )
-        llm = ChatOllama(model=model_name, temperature=0, num_predict=1200)
+        num_clusters = 9
+        num_predict = 1200
     else:
-        doc_filter = EmbeddingsClusteringFilter(
-            embeddings=embeddings, num_clusters=5, num_closest=1
-        )
-        llm = ChatOllama(model=model_name, temperature=0, num_predict=600)
+        num_clusters = 5
+        num_predict = 600
+    
+    # 3. K-means clustering
+    step_start = time.time()
+    doc_filter = EmbeddingsClusteringFilter(
+        embeddings=embeddings, num_clusters=num_clusters, num_closest=1
+    )
+    result = doc_filter.transform_documents(documents=texts)
+    print(f"⏱️  [3/4] K-means clustering ({num_clusters} klastrów): {time.time() - step_start:.2f}s")
+    
+    # Use cached LLM instance instead of creating new one each time
+    llm = get_cached_llm(model_name, num_predict)
 
     try:
-        result = doc_filter.transform_documents(documents=texts)
+        # 4. Generowanie podsumowania przez LLM
+        step_start = time.time()
+        print(f"🤖 [4/4] Generowanie podsumowania przez LLM ({model_name})...")
         checker_chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt)
-        summary = checker_chain.run(result)
+        # Use invoke() instead of deprecated run()
+        response = checker_chain.invoke({"input_documents": result})
+        llm_time = time.time() - step_start
+        print(f"⏱️  [4/4] Generowanie przez LLM: {llm_time:.2f}s")
+        
+        summary = response.get("output_text", str(response))
+        total_time = time.time() - total_start
+        print(f"✅ CAŁKOWITY CZAS: {total_time:.2f}s")
+        print(f"{'='*60}\n")
+        
         return f"#### Model: {model_name} | Liczba stron: {len(pages)} ####\n{summary}"
     except Exception as e:
+        print(f"❌ BŁĄD: {e}")
+        print(f"{'='*60}\n")
         return f"#### zbyt mały dokument, {len(pages)} stron w raporcie #### {e}"
 
 
