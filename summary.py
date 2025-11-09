@@ -51,9 +51,11 @@ def get_cached_llm(model_name: str, num_predict: int) -> ChatOllama:
             model=model_name,
             temperature=0,
             num_predict=num_predict,
-            num_gpu=1,  # Force use of 1 GPU
-            num_ctx=2048,  # Zmniejszony kontekst (domyślnie 4096) aby zmieścić się w VRAM
+            num_gpu=-1,  # Use all available GPUs for maximum performance
+            num_ctx=4096,  # Pełny kontekst (domyślnie) - zwiększone do pełnego obciążenia GPU
+            num_thread=None,  # Let Ollama decide optimal thread count (don't limit CPU)
         )
+        print(f"✅ LLM configured: num_gpu=-1, num_ctx=4096, num_thread=None")
     return _llm_cache[cache_key]
 
 
@@ -149,13 +151,26 @@ def summarize_document_with_kmeans_clustering(file_path: str, model_name: str = 
         # 4. Generowanie podsumowania przez LLM
         step_start = time.time()
         print(f"🤖 [4/4] Generowanie podsumowania przez LLM ({model_name})...")
-        checker_chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt)
-        # Use invoke() instead of deprecated run()
-        response = checker_chain.invoke({"input_documents": result})
+        
+        # Direct LLM invocation instead of chain for better GPU utilization
+        # Concatenate all documents into one prompt
+        combined_text = "\n\n".join([doc.page_content for doc in result])
+        full_prompt = prompt.format(text=combined_text)
+        
+        print(f"📝 Prompt length: {len(full_prompt)} characters")
+        
+        # Direct invoke for maximum GPU usage
+        response = llm.invoke(full_prompt)
+        
         llm_time = time.time() - step_start
         print(f"⏱️  [4/4] Generowanie przez LLM: {llm_time:.2f}s")
         
-        summary = response.get("output_text", str(response))
+        # Extract text from response
+        if hasattr(response, 'content'):
+            summary = response.content
+        else:
+            summary = str(response)
+            
         total_time = time.time() - total_start
         print(f"✅ CAŁKOWITY CZAS: {total_time:.2f}s")
         print(f"{'='*60}\n")

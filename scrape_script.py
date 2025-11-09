@@ -351,21 +351,88 @@ def generate_summary_report(
         # Dodaj CSS dla lepszego formatowania
         css_style = """
         <style>
+            @page {
+                size: A4;
+                margin: 15mm;
+            }
             body {
                 font-family: 'DejaVu Sans', Arial, sans-serif;
-                line-height: 1.6;
-                margin: 40px;
+                line-height: 1.4;
+                margin: 0;
+                padding: 0;
                 color: #333;
+                font-size: 10pt;
             }
-            h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
-            h2 { color: #34495e; border-bottom: 2px solid #95a5a6; padding-bottom: 8px; margin-top: 30px; }
-            h3 { color: #7f8c8d; }
-            table { border-collapse: collapse; width: 100%; margin: 20px 0; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #3498db; color: white; }
-            tr:nth-child(even) { background-color: #f2f2f2; }
-            code { background-color: #ecf0f1; padding: 2px 6px; border-radius: 3px; }
-            hr { border: 0; height: 2px; background: #bdc3c7; margin: 30px 0; }
+            h1 { 
+                color: #2c3e50; 
+                border-bottom: 3px solid #3498db; 
+                padding-bottom: 8px;
+                font-size: 16pt;
+                margin-top: 10px;
+            }
+            h2 { 
+                color: #34495e; 
+                border-bottom: 2px solid #95a5a6; 
+                padding-bottom: 6px; 
+                margin-top: 20px;
+                font-size: 13pt;
+            }
+            h3 { 
+                color: #7f8c8d;
+                font-size: 11pt;
+                margin-top: 15px;
+            }
+            
+            /* Responsive table styling */
+            table { 
+                border-collapse: collapse; 
+                width: 100%; 
+                margin: 15px 0;
+                font-size: 8pt;
+                table-layout: fixed;
+            }
+            th, td { 
+                border: 1px solid #ddd; 
+                padding: 4px 6px;
+                text-align: left;
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+                hyphens: auto;
+            }
+            th { 
+                background-color: #3498db; 
+                color: white;
+                font-weight: bold;
+                font-size: 8pt;
+            }
+            tr:nth-child(even) { 
+                background-color: #f2f2f2; 
+            }
+            
+            /* Break long URLs and words */
+            td {
+                word-break: break-word;
+                max-width: 0;
+            }
+            
+            code { 
+                background-color: #ecf0f1; 
+                padding: 1px 4px; 
+                border-radius: 2px;
+                font-size: 8pt;
+            }
+            hr { 
+                border: 0; 
+                height: 1px; 
+                background: #bdc3c7; 
+                margin: 20px 0; 
+            }
+            
+            /* Better paragraph spacing */
+            p {
+                margin: 8px 0;
+                line-height: 1.4;
+            }
         </style>
         """
         

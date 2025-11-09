@@ -607,11 +607,32 @@ with gr.Blocks(title="GPW Scraper") as demo:
             
             with gr.Row():
                 with gr.Column():
-                    company_name = gr.Textbox(
-                        label="Nazwa firmy",
-                        info="Jaką firmę chcesz przeanalizować?",
-                        placeholder="np. Asseco, PKN Orlen, CD Projekt"
+                    with gr.Row():
+                        company_name = gr.Dropdown(
+                            choices=[],
+                            label="Nazwa firmy",
+                            info="Jaką firmę chcesz przeanalizować?",
+                            interactive=True,
+                            filterable=True,
+                            allow_custom_value=True
+                        )
+                        refresh_companies_scraping = gr.Button("🔄", scale=0, size="sm")
+                    
+                    def refresh_companies_dropdown():
+                        """Pobiera listę spółek z bazy danych"""
+                        from database_connection import get_all_companies
+                        companies = get_all_companies()
+                        company_names = sorted([c.get('name', c) if isinstance(c, dict) else str(c) for c in companies])
+                        return gr.update(choices=company_names)
+                    
+                    refresh_companies_scraping.click(
+                        fn=refresh_companies_dropdown,
+                        inputs=[],
+                        outputs=[company_name]
                     )
+                    
+                    # Inicjalne ładowanie spółek
+                    demo.load(fn=refresh_companies_dropdown, outputs=[company_name])
                     report_amount = gr.Slider(
                         1,
                         25,
@@ -671,45 +692,65 @@ with gr.Blocks(title="GPW Scraper") as demo:
                 
                 with gr.Column():
                     # Historia wyszukiwań
-                    gr.Markdown("### 📜 Historia wyszukiwań")
-                    temp = {
-                        "Company Name": [],
-                        "Report amount": [],
-                        "Download report types": [],
-                        "Report date": [],
-                        "Report type": [],
-                        "Report category": [],
-                    }
-                    text = ""
-                    itr = 0
-                    # Get search history from database (v2.0)
-                    historia_db = get_search_history(limit=100)
-                    historia_z_bazy = [
-                        [
-                            h['company_name'],
-                            h['report_amount'],
-                            h['download_type'],
-                            h['report_date'],
-                            h['report_type'] or 'not specified',
-                            h['report_category'] or 'not specified',
-                            h['created_at'].strftime('%Y-%m-%d %H:%M:%S') if h.get('created_at') else 'N/A'
+                    gr.Markdown("### 📜 Historia wyszukiwań (ostatnie 2)")
+                    
+                    # Dynamiczna historia z przyciskiem odświeżenia
+                    def refresh_search_history():
+                        """Odśwież historię wyszukiwań"""
+                        temp = {
+                            "Company Name": [],
+                            "Report amount": [],
+                            "Download report types": [],
+                            "Report date": [],
+                            "Report type": [],
+                            "Report category": [],
+                        }
+                        text = ""
+                        itr = 0
+                        # Get search history from database (v2.0) - last 2 searches only
+                        historia_db = get_search_history(limit=2)
+                        historia_z_bazy = [
+                            [
+                                h['company_name'],
+                                h['report_amount'],
+                                h['download_type'],
+                                h['report_date'],
+                                h['report_type'] or 'not specified',
+                                h['report_category'] or 'not specified',
+                                h['created_at'].strftime('%Y-%m-%d %H:%M:%S') if h.get('created_at') else 'N/A'
+                            ]
+                            for h in historia_db
                         ]
-                        for h in historia_db
-                    ]
-                    for lista in historia_z_bazy:
-                        for element, key in zip(lista, temp.keys()):
-                            if element == "" or element is None:
-                                element = "not specified"
-                            temp[key].append(element)
-                            text += "\n- **" + key + ":** *" + str(element) + "*"
-                        itr += 1
-                        if itr < len(historia_z_bazy):
-                            text += "\n"
-                            text += "-" * 50
-
+                        
+                        if not historia_z_bazy:
+                            return "*Brak historii wyszukiwań*"
+                        
+                        for lista in historia_z_bazy:
+                            for element, key in zip(lista, temp.keys()):
+                                if element == "" or element is None:
+                                    element = "not specified"
+                                temp[key].append(element)
+                                text += "\n- **" + key + ":** *" + str(element) + "*"
+                            itr += 1
+                            if itr < len(historia_z_bazy):
+                                text += "\n"
+                                text += "-" * 50
+                        
+                        return text
+                    
                     history = gr.Markdown(
-                        value=text,
+                        value=refresh_search_history(),
                         label="SEARCH HISTORY",
+                    )
+                    
+                    # Przycisk odświeżenia historii
+                    with gr.Row():
+                        refresh_history_btn = gr.Button("🔄 Odśwież historię", scale=1, size="sm")
+                    
+                    refresh_history_btn.click(
+                        fn=refresh_search_history,
+                        inputs=[],
+                        outputs=[history],
                     )
             
             with gr.Row():
@@ -1091,7 +1132,9 @@ with gr.Blocks(title="GPW Scraper") as demo:
                 report_id_input = gr.Number(label="ID raportu do pobrania", precision=0)
                 download_report_btn = gr.Button("📥 Pobierz raport", variant="secondary")
             
-            report_content = gr.Textbox(label="Podgląd raportu", lines=20, max_lines=30)
+            # Podgląd raportu - PDF (pełna szerokość)
+            report_pdf_viewer = gr.HTML(label="📋 Podgląd PDF", value="<p style='text-align: center; color: gray;'>PDF pojawi się tutaj...</p>")
+
             download_file_output = gr.File(label="Pobierz plik")
             
             def search_summary_reports(company_filter, job_filter):
@@ -1130,49 +1173,66 @@ with gr.Blocks(title="GPW Scraper") as demo:
                     return [[f"Błąd: {e}", "", "", "", "", "", "", "", ""]]
             
             def load_report_content(report_id):
-                """Ładuje zawartość raportu do podglądu (v2.0)."""
+                """Ładuje zawartość raportu do podglądu (zwraca HTML do `report_pdf_viewer` oraz ścieżkę pliku)."""
                 from database_connection import get_summary_report_by_id
                 import os
-                
+                import base64
+
                 if not report_id:
-                    return "Wprowadź ID raportu", None
-                
+                    return "<p style='text-align: center; color: gray;'>Wprowadź ID raportu</p>", None
+
                 try:
                     report = get_summary_report_by_id(int(report_id))
                     if not report:
-                        return "Raport nie znaleziony", None
-                    
+                        return "<p style='text-align: center; color: gray;'>Raport nie znaleziony</p>", None
+
                     file_path = report['file_path']
-                    
+
                     if not os.path.exists(file_path):
-                        return f"Plik nie istnieje: {file_path}", None
-                    
+                        return f"<p style='text-align: center; color: red;'>Plik nie istnieje: {file_path}</p>", None
+
                     # Check file format
                     file_ext = os.path.splitext(file_path)[1].lower()
-                    
+
                     if file_ext == '.pdf':
-                        # PDF cannot be displayed as text, only download
-                        return (
-                            f"📄 **Raport PDF**\n\n"
-                            f"**ID:** {report['id']}\n"
-                            f"**Zadanie:** {report['job_name']}\n"
-                            f"**Firma:** {report['company']}\n"
-                            f"**Data utworzenia:** {report['created_at']}\n"
-                            f"**Rozmiar:** {report['file_size'] / 1024:.1f} KB\n\n"
-                            f"⬇️ **Użyj przycisku 'Pobierz plik' poniżej aby pobrać PDF**",
-                            file_path
-                        )
+                        # PDF - embed jako iframe z base64
+                        try:
+                            with open(file_path, 'rb') as f:
+                                pdf_data = base64.b64encode(f.read()).decode('utf-8')
+
+                            # Tworzymy HTML z embeddowanym PDF-em
+                            pdf_html = f"""
+                            <div style="height: 800px;">
+                                <iframe
+                                    src="data:application/pdf;base64,{pdf_data}"
+                                    width="100%"
+                                    height="100%"
+                                    style="border: none;"
+                                >
+                                    Twoja przeglądarka nie obsługuje PDF-ów. 
+                                    <a href="data:application/pdf;base64,{pdf_data}" download="raport.pdf">Pobierz PDF</a>
+                                </iframe>
+                            </div>
+                            """
+
+                            return pdf_html, file_path
+                        except Exception as pdf_err:
+                            return f"<p style='text-align: center; color: red;'>Błąd ładowania PDF: {pdf_err}</p>", file_path
+
                     elif file_ext in ['.md', '.txt']:
-                        # Markdown/text can be displayed
+                        # Markdown/text - pokaż jako preformatted HTML
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
-                        return content, file_path
+
+                        safe_html = f"<pre style='white-space: pre-wrap; word-break: break-word;'>{content}</pre>"
+                        return safe_html, file_path
                     else:
-                        return f"⚠️ Nieobsługiwany format pliku: {file_ext}", file_path
-                    
+                        return f"<p style='text-align: center; color: orange;'>Nieobsługiwany format pliku: {file_ext}</p>", file_path
+
                 except Exception as e:
                     import traceback
-                    return f"Błąd: {e}\n\n{traceback.format_exc()}", None
+                    error_msg = f"Błąd: {e}"
+                    return f"<p style='text-align: center; color: red;'>{error_msg}</p><pre>{traceback.format_exc()}</pre>", None
             
             search_reports_btn.click(
                 fn=search_summary_reports,
@@ -1183,7 +1243,7 @@ with gr.Blocks(title="GPW Scraper") as demo:
             download_report_btn.click(
                 fn=load_report_content,
                 inputs=[report_id_input],
-                outputs=[report_content, download_file_output]
+                outputs=[report_pdf_viewer, download_file_output]
             )
             
             # Auto-load przy otwarciu
