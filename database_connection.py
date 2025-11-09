@@ -1,91 +1,94 @@
-import pymysql
-from datetime import datetime
+"""
+Database Connection Module v2.0 - BACKWARD COMPATIBILITY WRAPPER
+Supports: companies, reports, search_history, scheduled_jobs, 
+          summary_reports, job_execution_log, downloaded_files
+Thread-safe with thread-local connections.
 
-host = "localhost"
-user = "root"
-password = ""
-database = "gpw data"
+NOTE: This file now imports from src/database/ for clean architecture.
+All new code should import directly from src.database instead of this file.
+"""
+
+# Import all functions from new structure
+from src.database.connection import (
+    get_connection,
+    get_cursor,
+    connect,
+    ensure_connection,
+    execute_query,
+    close_connection,
+    HOST,
+    USER,
+    PASSWORD,
+    DATABASE,
+    _thread_local
+)
+
+from src.database.repositories.company_repo import (
+    insert_company,
+    get_company_id,
+    get_all_companies
+)
+
+from src.database.repositories.report_repo import (
+    insert_report,
+    get_reports
+)
+
+from src.database.repositories.file_repo import (
+    calculate_md5,
+    file_exists_by_md5,
+    insert_downloaded_file,
+    update_file_summary,
+    get_downloaded_files,
+    get_downloaded_file_by_name
+)
+
+from src.database.repositories.job_repo import (
+    insert_scheduled_job,
+    get_scheduled_job,
+    get_all_scheduled_jobs,
+    update_job_run_stats,
+    delete_scheduled_job,
+    insert_job_execution,
+    update_job_execution,
+    get_job_execution_logs,
+    get_active_jobs_view
+)
+
+from src.database.repositories.history_repo import (
+    insert_search_history,
+    get_search_history,
+    insert_summary_report,
+    get_summary_reports,
+    get_summary_report_by_id,
+    get_company_stats_view
+)
+
+# Backward compatibility - expose connection and cursor as module-level properties
+def _update_globals():
+    """Update module globals for backward compatibility"""
+    import sys
+    current_module = sys.modules[__name__]
+    current_module.connection = get_connection()
+    current_module.cursor = get_cursor()
+    return current_module.connection, current_module.cursor
 
 
-try:
-    connection = pymysql.connect(
-        host=host, user=user, password=password, database=database
-    )
-
-    kursor = connection.cursor()
-
-    def wstaw_firme(firma):
-        sql = "INSERT INTO firma(nazwa)VALUES(%s)"
-        kursor.execute(sql, firma)
-        connection.commit()
-
-    def wstaw_dane(
-        data,
-        tytul_raportu,
-        typ_raportu,
-        kategoria_raportu,
-        zmiana,
-        kurs,
-        link,
-        Id_firmy,
-    ):
-        sql = "INSERT INTO dane(data,tytul_raportu,typ_raportu,kategoria_raportu,zmiana,kurs,link,Id_firmy) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)"
-        val = (
-            data,
-            tytul_raportu,
-            typ_raportu,
-            kategoria_raportu,
-            zmiana,
-            kurs,
-            link,
-            Id_firmy,
-        )
-        kursor.execute(sql, val)
-        connection.commit()
-
-    def pobierz_klucz_firmy(firma):
-        mysql = "SELECT id_firmy FROM firma WHERE nazwa LIKE %s "
-        kursor.execute(mysql, firma)
-        return kursor.fetchone()[0]
-
-    def wstaw_historie(
-        company_name,
-        report_amount,
-        download_type,
-        report_date,
-        report_type,
-        report_category,
-    ):
-        if report_date == "":
-            sql = "INSERT INTO historia(company_name, report_amount, download_type, report_type, report_category) VALUES(%s,%s,%s,%s,%s)"
-            val = (
-                company_name,
-                report_amount,
-                download_type,
-                report_type,
-                report_category,
-            )
-            kursor.execute(sql, val)
-            connection.commit()
-        else:
-            report_date = datetime.strptime(report_date, "%d-%m-%Y")
-            datetime.strftime(report_date, "%Y-%m-%d")
-            sql = "INSERT INTO historia(company_name, report_amount, download_type, report_date, report_type, report_category) VALUES(%s,%s,%s,%s,%s,%s)"
-            val = (
-                company_name,
-                report_amount,
-                download_type,
-                report_date,
-                report_type,
-                report_category,
-            )
-            kursor.execute(sql, val)
-            connection.commit()
-
-    def pokaz_historie():
-        sql = "SELECT company_name, report_amount, download_type, report_date, report_type, report_category FROM historia order by id desc LIMIT 2"
-        kursor.execute(sql)
-        return kursor.fetchall()
-
-except pymysql.Error as e:
-    print("Błąd połączenia", e)
+if __name__ == "__main__":
+    print("Database Connection Module v2.0 - Compatibility Wrapper")
+    print(f"Connected to: {DATABASE}")
+    print(f"Available tables: companies, reports, search_history,")
+    print(f"                  scheduled_jobs, summary_reports,")
+    print(f"                  job_execution_log, downloaded_files")
+    print()
+    print("NOTE: New code should import from src.database")
+    print()
+    
+    # Test connection
+    companies = get_all_companies()
+    print(f"Found {len(companies)} companies in database")
+    for company in companies[:5]:
+        print(f"  - {company['name']}")
+    
+    if len(companies) > 5:
+        print(f"  ... and {len(companies) - 5} more")
