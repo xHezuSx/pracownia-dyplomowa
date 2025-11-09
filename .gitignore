@@ -1,9 +1,13 @@
 .venv/
 __pycache__/
-*.pyc   
+*.pyc
+*.old
 .idea/
 REPORTS/
 scheduled_results/
 logs/
 .DS_Store
 SUMMARY_REPORTS/
+.env
+*.pdf
+*.md.backup
