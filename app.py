@@ -139,13 +139,25 @@ def run_scrape_ui(
         model_name,
     )
     
-    # Rozpakuj wynik (4 elementy teraz)
-    if len(result) == 4:
-        summary_text, df, attachments, summary_report_path = result
-        # Dodaj info o zbiorczym raporcie do wyniku
+    # Rozpakuj wynik (NOWE: 5 elementów)
+    if len(result) == 5:
+        summary_text, df, attachments, summary_report_path, collective_summary = result
+        
+        # Dodaj info o zbiorczym raporcie do statusu
         if summary_report_path:
             summary_text += f"\n\n📄 **Zbiorczy raport zapisany:** `{summary_report_path}`"
-        result = (summary_text, df, attachments)
+        
+        # Jeśli nie ma collective summary, użyj placeholder
+        if not collective_summary or collective_summary.strip() == "":
+            collective_summary = "*Brak zbiorczego podsumowania (nie wygenerowano streszczeń)*"
+        
+        result = (summary_text, df, attachments, collective_summary)
+    else:
+        # Stara wersja (4 elementy) - fallback
+        summary_text, df, attachments, summary_report_path = result
+        if summary_report_path:
+            summary_text += f"\n\n📄 **Zbiorczy raport zapisany:** `{summary_report_path}`"
+        result = (summary_text, df, attachments, "*Brak zbiorczego podsumowania*")
     
     yield result
 
@@ -490,7 +502,14 @@ with gr.Blocks(title="GPW Scraper") as demo:
             
             with gr.Row():
                 output_summaries = gr.Markdown(
-                    label="Podsumowania AI",
+                    label="Podsumowania AI (szczegółowe)",
+                )
+            
+            # NOWE: Zbiorczy raport LLM
+            with gr.Row():
+                output_collective = gr.Markdown(
+                    label="📋 Zbiorczy raport LLM",
+                    value="*Zbiorczy raport pojawi się tutaj po wygenerowaniu streszczeń...*",
                 )
             
             submit_btn.click(
@@ -505,7 +524,7 @@ with gr.Blocks(title="GPW Scraper") as demo:
                     download_types_file,
                     model_dropdown,
                 ],
-                outputs=[output_text, output_dataframe, output_summaries],
+                outputs=[output_text, output_dataframe, output_summaries, output_collective],
             )
         
         # ====================================================================

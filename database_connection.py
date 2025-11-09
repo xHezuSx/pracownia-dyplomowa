@@ -36,7 +36,10 @@ def connect():
             database=DATABASE,
             cursorclass=pymysql.cursors.DictCursor,  # Return results as dictionaries
             autocommit=False,
-            connect_timeout=10
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30,
+            charset='utf8mb4'
         )
         cursor = connection.cursor()
         return True
@@ -47,18 +50,88 @@ def connect():
 def ensure_connection():
     """Ensure database connection is alive, reconnect if needed"""
     global connection, cursor
-    try:
-        if connection is None:
-            return connect()
-        # Test connection with ping
-        connection.ping(reconnect=True)
-        return True
-    except Exception:
-        return connect()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if connection is None:
+                if connect():
+                    return True
+            else:
+                # Test connection with ping
+                connection.ping(reconnect=True)
+                return True
+        except Exception as e:
+            # Connection failed, force reconnect
+            try:
+                if connection:
+                    connection.close()
+            except:
+                pass
+            connection = None
+            cursor = None
+            
+            if attempt < max_retries - 1:
+                # Try again
+                continue
+            else:
+                # Final attempt
+                return connect()
+    
+    return False
+
+
+def execute_query(sql: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
+    """
+    Execute SQL query with automatic reconnect on packet sequence error.
+    
+    Returns:
+    - None if INSERT/UPDATE/DELETE
+    - Single dict if fetch_one=True
+    - List of dicts if fetch_all=True
+    """
+    global connection, cursor
+    max_retries = 2
+    
+    for attempt in range(max_retries):
+        try:
+            ensure_connection()
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            
+            if fetch_one:
+                return cursor.fetchone()
+            elif fetch_all:
+                return cursor.fetchall()
+            else:
+                connection.commit()
+                return cursor.lastrowid
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check for packet sequence or connection errors
+            if "packet sequence" in error_msg or "connection" in error_msg or "lost" in error_msg:
+                try:
+                    if connection:
+                        connection.close()
+                except:
+                    pass
+                connection = None
+                cursor = None
+                
+                if attempt < max_retries - 1:
+                    # Try to reconnect and retry
+                    if connect():
+                        continue
+            
+            # If we get here, it's a real error
+            connection.rollback()
+            raise
 
 # Initialize connection
 connect()
-
 
 # ============================================================================
 # COMPANIES TABLE - Company Management
@@ -130,6 +203,15 @@ def insert_report(
         # Convert date format: if contains time (space), extract only date part
         if date and " " in date:
             date = date.split()[0]
+        
+        # Convert DD-MM-YYYY → YYYY-MM-DD for MySQL
+        if date:
+            try:
+                date_obj = datetime.strptime(date, "%d-%m-%Y")
+                date = date_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                # If parsing fails, keep original format
+                pass
         
         sql = """
             INSERT INTO reports 
@@ -269,6 +351,7 @@ def update_file_summary(file_id: int, summary_text: str):
 
 def get_downloaded_files(company: str = None, is_summarized: bool = None) -> List[Dict]:
     """Get downloaded files with optional filters"""
+    ensure_connection()
     try:
         sql = "SELECT * FROM downloaded_files WHERE 1=1"
         params = []
@@ -287,6 +370,18 @@ def get_downloaded_files(company: str = None, is_summarized: bool = None) -> Lis
     except Exception as e:
         print(f"Error fetching downloaded files: {e}")
         return []
+
+
+def get_downloaded_file_by_name(company: str, file_name: str) -> Optional[Dict]:
+    """Get downloaded file by company and file name"""
+    ensure_connection()
+    try:
+        sql = "SELECT * FROM downloaded_files WHERE company = %s AND file_name = %s LIMIT 1"
+        cursor.execute(sql, (company, file_name))
+        return cursor.fetchone()
+    except Exception as e:
+        print(f"Error fetching file by name: {e}")
+        return None
 
 
 # ============================================================================
@@ -309,6 +404,18 @@ def insert_search_history(
         # Convert empty date string to None
         if not report_date or report_date.strip() == "":
             report_date = None
+        else:
+            # Extract date part if time is present
+            if " " in report_date:
+                report_date = report_date.split()[0]
+            
+            # Convert DD-MM-YYYY → YYYY-MM-DD for MySQL
+            try:
+                date_obj = datetime.strptime(report_date, "%d-%m-%Y")
+                report_date = date_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                # If parsing fails, keep original format
+                pass
         
         sql = """
             INSERT INTO search_history
@@ -395,6 +502,7 @@ def insert_scheduled_job(
 
 def get_scheduled_job(job_name: str) -> Optional[Dict]:
     """Get scheduled job by name"""
+    ensure_connection()
     try:
         sql = "SELECT * FROM scheduled_jobs WHERE job_name = %s"
         cursor.execute(sql, (job_name,))
@@ -421,17 +529,17 @@ def get_all_scheduled_jobs(enabled_only: bool = False) -> List[Dict]:
             sql += " WHERE enabled = TRUE"
         sql += " ORDER BY job_name"
         
-        cursor.execute(sql)
-        results = cursor.fetchall()
+        results = execute_query(sql, fetch_all=True)
         
         # Parse JSON fields
-        for result in results:
-            if result['report_types']:
-                result['report_types'] = json.loads(result['report_types'])
-            if result['report_categories']:
-                result['report_categories'] = json.loads(result['report_categories'])
+        if results:
+            for result in results:
+                if result.get('report_types'):
+                    result['report_types'] = json.loads(result['report_types'])
+                if result.get('report_categories'):
+                    result['report_categories'] = json.loads(result['report_categories'])
         
-        return results
+        return results if results else []
     except Exception as e:
         print(f"Error fetching scheduled jobs: {e}")
         return []
@@ -489,6 +597,21 @@ def insert_summary_report(
     try:
         tags_json = json.dumps(tags) if tags else None
         
+        # Convert DD-MM-YYYY → YYYY-MM-DD for MySQL (if needed)
+        def convert_date(date_str):
+            if not date_str or date_str == "N/A":
+                return None
+            if " " in date_str:
+                date_str = date_str.split()[0]
+            try:
+                date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+                return date_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                return date_str
+        
+        date_from = convert_date(date_from)
+        date_to = convert_date(date_to)
+        
         sql = """
             INSERT INTO summary_reports
             (job_name, company, date_from, date_to, report_count,
@@ -499,7 +622,7 @@ def insert_summary_report(
         cursor.execute(sql, (
             job_name, company, date_from, date_to, report_count,
             document_count, file_path, file_format, file_size,
-            model_used, summary_preview, tags
+            model_used, summary_preview, tags_json
         ))
         connection.commit()
         return cursor.lastrowid
@@ -516,7 +639,6 @@ def get_summary_reports(
     limit: int = 50
 ) -> List[Dict]:
     """Get summary reports with filters"""
-    ensure_connection()
     try:
         sql = "SELECT * FROM summary_reports WHERE 1=1"
         params = []
@@ -536,15 +658,15 @@ def get_summary_reports(
         sql += " ORDER BY created_at DESC LIMIT %s"
         params.append(limit)
         
-        cursor.execute(sql, params)
-        results = cursor.fetchall()
+        results = execute_query(sql, tuple(params), fetch_all=True)
         
         # Parse JSON tags
-        for result in results:
-            if result['tags']:
-                result['tags'] = json.loads(result['tags'])
+        if results:
+            for result in results:
+                if result.get('tags'):
+                    result['tags'] = json.loads(result['tags'])
         
-        return results
+        return results if results else []
     except Exception as e:
         print(f"Error fetching summary reports: {e}")
         return []
@@ -552,6 +674,7 @@ def get_summary_reports(
 
 def get_summary_report_by_id(report_id: int) -> Optional[Dict]:
     """Get summary report by ID"""
+    ensure_connection()
     try:
         sql = "SELECT * FROM summary_reports WHERE id = %s"
         cursor.execute(sql, (report_id,))
@@ -638,8 +761,8 @@ def get_job_execution_logs(job_name: str = None, limit: int = 50) -> List[Dict]:
         sql += " ORDER BY started_at DESC LIMIT %s"
         params.append(limit)
         
-        cursor.execute(sql, params)
-        return cursor.fetchall()
+        results = execute_query(sql, tuple(params), fetch_all=True)
+        return results if results else []
     except Exception as e:
         print(f"Error fetching execution logs: {e}")
         return []
@@ -651,20 +774,19 @@ def get_job_execution_logs(job_name: str = None, limit: int = 50) -> List[Dict]:
 
 def get_active_jobs_view() -> List[Dict]:
     """Get active jobs from v_active_jobs view"""
-    ensure_connection()
     try:
         sql = "SELECT * FROM v_active_jobs"
-        cursor.execute(sql)
-        results = cursor.fetchall()
+        results = execute_query(sql, fetch_all=True)
         
         # Parse JSON fields
-        for result in results:
-            if result.get('report_types'):
-                result['report_types'] = json.loads(result['report_types'])
-            if result.get('report_categories'):
-                result['report_categories'] = json.loads(result['report_categories'])
+        if results:
+            for result in results:
+                if result.get('report_types'):
+                    result['report_types'] = json.loads(result['report_types'])
+                if result.get('report_categories'):
+                    result['report_categories'] = json.loads(result['report_categories'])
         
-        return results
+        return results if results else []
     except Exception as e:
         print(f"Error fetching active jobs view: {e}")
         return []
@@ -674,8 +796,8 @@ def get_company_stats_view() -> List[Dict]:
     """Get company statistics from v_company_stats view"""
     try:
         sql = "SELECT * FROM v_company_stats ORDER BY total_reports DESC"
-        cursor.execute(sql)
-        return cursor.fetchall()
+        results = execute_query(sql, fetch_all=True)
+        return results if results else []
     except Exception as e:
         print(f"Error fetching company stats view: {e}")
         return []
